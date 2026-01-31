@@ -36,7 +36,14 @@ export async function POST(request: NextRequest) {
             .single()
 
         if (menuError || !richMenu) {
-            return NextResponse.json({ error: 'リッチメニューが見つかりません' }, { status: 404 })
+            console.error('RichMenu fetch error:', menuError, 'ID:', richMenuId)
+            return NextResponse.json({
+                error: 'リッチメニューが見つかりません',
+                details: {
+                    id: richMenuId,
+                    dbError: menuError
+                }
+            }, { status: 404 })
         }
 
         if (!richMenu.image_url) {
