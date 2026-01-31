@@ -1,0 +1,10 @@
+name = "line-webhook-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-01-27"
+
+# 環境変数（デプロイ時にダッシュボードで設定するか、.dev.varsファイルを使用）
+[vars]
+# LメッセージのWebhook URL
+L_MESSAGE_WEBHOOK_URL = "https://cb.lmes.jp/line/callback/add/176329"
+# 自作アプリのWebhook URL
+MY_APP_WEBHOOK_URL = "https://line-manager-omega.vercel.app/api/webhook/2008192218"
