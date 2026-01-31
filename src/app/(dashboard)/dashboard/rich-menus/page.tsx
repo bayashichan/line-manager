@@ -266,18 +266,7 @@ export default function RichMenusPage() {
         }
     }
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0]
-        if (file) {
-            setFormImageFile(file)
-            const reader = new FileReader()
-            reader.onloadend = () => {
-                // 画像サイズチェックなどが必要だが、一旦プレビュー表示
-                setFormImagePreview(reader.result as string)
-            }
-            reader.readAsDataURL(file)
-        }
-    }
+
 
     const handleSave = async () => {
         if (!formName.trim() || !currentChannelId) return
@@ -406,11 +395,18 @@ export default function RichMenusPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ richMenuId: menuId }),
             })
-            if (!response.ok) throw new Error('LINE APIへの登録に失敗しました')
+
+            const data = await response.json()
+
+            if (!response.ok) {
+                throw new Error(data.error || data.details || 'LINE APIへの登録に失敗しました')
+            }
+
             alert('LINE APIへの登録が完了しました！')
             if (currentChannelId) await fetchData(currentChannelId)
         } catch (error: any) {
-            alert(error.message)
+            console.error('Registration Error:', error)
+            alert(`エラー: ${error.message}`)
         }
         setRegistering(null)
     }
@@ -420,15 +416,108 @@ export default function RichMenusPage() {
         setRegistering(menuId)
         try {
             const response = await fetch(`/api/rich-menus/register?richMenuId=${menuId}`, { method: 'DELETE' })
-            if (!response.ok) throw new Error('削除に失敗しました')
+            const data = await response.json()
+
+            if (!response.ok) {
+                throw new Error(data.error || '削除に失敗しました')
+            }
+
             alert('LINE APIから削除しました')
             if (currentChannelId) await fetchData(currentChannelId)
         } catch (error: any) {
-            alert(error.message)
+            alert(`エラー: ${error.message}`)
         }
         setRegistering(null)
     }
 
+    // 画像を指定サイズにリサイズする関数
+    const resizeImage = (file: File, width: number, height: number): Promise<File> => {
+        return new Promise((resolve, reject) => {
+            const img = new Image()
+            const reader = new FileReader()
+
+            reader.onload = (e) => {
+                img.src = e.target?.result as string
+            }
+
+            img.onload = () => {
+                const canvas = document.createElement('canvas')
+                canvas.width = width
+                canvas.height = height
+                const ctx = canvas.getContext('2d')
+
+                if (!ctx) {
+                    reject(new Error('Canvas context failure'))
+                    return
+                }
+
+                // 白背景で塗りつぶす（透過PNG対策）
+                ctx.fillStyle = '#FFFFFF'
+                ctx.fillRect(0, 0, width, height)
+
+                // アスペクト比を維持して中央に描画するか、引き伸ばすか
+                // ここではLINEのリッチメニューの性質上、全体を埋める（引き伸ばし/切り取り）が望ましいが
+                // ユーザーの画像を勝手に切るとクレームになるため、フィットさせる (contain)
+                // ただし、LINEは「余白」を許さない（透過不可）なので、余白は白になる。
+
+                // 単純な引き伸ばし(fill)だと画像が歪む。
+                // drawImage(img, 0, 0, width, height) -> 歪む
+
+                // ここでは「歪んでもいいから埋める」か「余白あり」か迷うが、
+                // リッチメニュー作成ツールとしては「歪まない」のが正義。
+                // 描画領域を計算
+                const scale = Math.max(width / img.width, height / img.height)
+                const x = (width / 2) - (img.width / 2) * scale
+                const y = (height / 2) - (img.height / 2) * scale
+
+                // ctx.drawImage(img, x, y, img.width * scale, img.height * scale)
+                // いや、これだとカバー(cover)になる。はみ出る。
+
+                // とりあえず単純にリサイズ（歪むが一番確実）させる。
+                // こだわるユーザーは自分で2500x1686を作ってくるはず。
+                ctx.drawImage(img, 0, 0, width, height)
+
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        const resizedFile = new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() })
+                        resolve(resizedFile)
+                    } else {
+                        reject(new Error('Canvas blob failure'))
+                    }
+                }, 'image/jpeg', 0.9)
+            }
+
+            reader.readAsDataURL(file)
+        })
+    }
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (file) {
+            // ターゲットサイズを決定
+            const selectedTemplate = RICH_MENU_TEMPLATES.find(t => t.id === selectedTemplateId)
+            const isSmall = selectedTemplate?.type === 'Small'
+            const targetWidth = 2500
+            const targetHeight = isSmall ? 843 : 1686
+
+            try {
+                // 自動リサイズ
+                const resizedFile = await resizeImage(file, targetWidth, targetHeight)
+                setFormImageFile(resizedFile)
+
+                // プレビュー表示
+                const reader = new FileReader()
+                reader.onloadend = () => {
+                    setFormImagePreview(reader.result as string)
+                }
+                reader.readAsDataURL(resizedFile)
+
+            } catch (err) {
+                console.error('Resize error:', err)
+                alert('画像の処理に失敗しました')
+            }
+        }
+    }
     const addArea = () => {
         setFormAreas([
             ...formAreas,
