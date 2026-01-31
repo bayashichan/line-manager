@@ -399,7 +399,9 @@ export default function RichMenusPage() {
             const data = await response.json()
 
             if (!response.ok) {
-                throw new Error(data.error || data.details || 'LINE APIへの登録に失敗しました')
+                const errorMsg = data.error || 'LINE APIへの登録に失敗しました'
+                const debugInfo = data.details ? `\n詳細: ${JSON.stringify(data.details, null, 2)}` : ''
+                throw new Error(`${errorMsg}${debugInfo}`)
             }
 
             alert('LINE APIへの登録が完了しました！')
