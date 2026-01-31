@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
             .from('rich_menus')
             .select(`
         *,
-        channels (*)
+        channels!rich_menus_channel_id_fkey (*)
       `)
             .eq('id', richMenuId)
             .single()
@@ -140,7 +140,7 @@ export async function DELETE(request: NextRequest) {
             .from('rich_menus')
             .select(`
         *,
-        channels (*)
+        channels!rich_menus_channel_id_fkey (*)
       `)
             .eq('id', richMenuId)
             .single()
