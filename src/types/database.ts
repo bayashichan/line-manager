@@ -121,6 +121,12 @@ export interface MessageContent {
     previewImageUrl?: string
     altText?: string
     contents?: object // Flex Message
+    customActions?: {
+        tagIds?: string[]
+        scenarioId?: string
+        replyText?: string
+        redirectUrl?: string
+    }
 }
 
 export interface MessageRecipient {

@@ -63,6 +63,30 @@ export class LineClient {
     }
 
     /**
+     * メッセージを返信
+     */
+    async replyMessage(replyToken: string, messages: object[], notificationDisabled: boolean = false) {
+        const body: any = {
+            replyToken,
+            messages
+        }
+
+        if (notificationDisabled) {
+            body.notificationDisabled = true
+        }
+
+        const response = await this.request('/message/reply', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        })
+        if (!response.ok) {
+            const error = await response.json()
+            throw new Error(`メッセージ返信に失敗: ${JSON.stringify(error)}`)
+        }
+        return response.json()
+    }
+
+    /**
      * プッシュメッセージを送信
      */
     async pushMessage(userId: string, messages: object[], notificationDisabled: boolean = false) {

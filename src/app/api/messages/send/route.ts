@@ -86,12 +86,37 @@ export async function POST(request: NextRequest) {
         let successCount = 0
         let failureCount = 0
 
-        // コンテンツの変換（リンク付き画像をFlex Messageに変換）
+        // コンテンツの変換（リッチメッセージをFlex Messageに変換）
         const processedContent = (message.content as any[]).map((block: any) => {
-            if (block.type === 'image' && block.linkUrl) {
+            // customActionsがある、または旧linkUrlがある場合はFlex Message化
+            if (block.type === 'image' && (block.customActions || block.linkUrl)) {
+                let action: any
+
+                if (block.customActions) {
+                    // customActions優先
+                    if (block.customActions.redirectUrl) {
+                        action = {
+                            type: 'uri',
+                            uri: block.customActions.redirectUrl
+                        }
+                    } else {
+                        // redirectUrlがない場合はPostback (タグ付け、シナリオなどはPostbackイベントで処理)
+                        action = {
+                            type: 'postback',
+                            data: `action=custom&mid=${messageId}`
+                        }
+                    }
+                } else if (block.linkUrl) {
+                    // 旧仕様互換
+                    action = {
+                        type: 'uri',
+                        uri: block.linkUrl
+                    }
+                }
+
                 return {
                     type: 'flex',
-                    altText: '画像が送信されました',
+                    altText: '画像メッセージ',
                     contents: {
                         type: 'bubble',
                         body: {
@@ -104,10 +129,7 @@ export async function POST(request: NextRequest) {
                                     size: 'full',
                                     aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
                                     aspectMode: 'cover',
-                                    action: {
-                                        type: 'uri',
-                                        uri: block.linkUrl
-                                    }
+                                    action: action
                                 }
                             ],
                             paddingAll: '0px'

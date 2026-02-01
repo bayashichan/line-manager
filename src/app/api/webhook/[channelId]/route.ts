@@ -122,6 +122,9 @@ async function processEvent(
             // チャット履歴に保存
             await handleMessage(supabase, channel.id, userId, event.message)
             break
+        case 'postback':
+            await handlePostback(supabase, lineClient, channel, userId, (event as any).postback)
+            break
         default:
             console.log('未処理のイベント:', event.type)
     }
@@ -342,6 +345,95 @@ async function handleMessage(
 
     } catch (error) {
         console.error('メッセージ処理エラー:', error)
+    }
+}
+
+/**
+ * Postbackイベント処理
+ */
+async function handlePostback(
+    supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
+    channel: { id: string },
+    lineUserId: string,
+    postback: { data: string, params?: any }
+) {
+    try {
+        const params = new URLSearchParams(postback.data)
+        const action = params.get('action')
+        const messageId = params.get('mid')
+
+        if (action === 'custom' && messageId) {
+            // メッセージ取得
+            const { data: message } = await supabase
+                .from('messages')
+                .select('content')
+                .eq('id', messageId)
+                .single()
+
+            if (!message) return
+
+            // アクション情報取得
+            // 簡易的に最初の画像メッセージのカスタムアクションを使用
+            const imageContent = (message.content as any[]).find(c => c.type === 'image')
+            const actions = imageContent?.customActions
+
+            if (!actions) return
+
+            // ユーザーID解決
+            const { data: user } = await supabase
+                .from('line_users')
+                .select('id')
+                .eq('channel_id', channel.id)
+                .eq('line_user_id', lineUserId)
+                .single()
+
+            if (!user) return
+
+            // 1. タグ付け
+            if (actions.tagIds && actions.tagIds.length > 0) {
+                const tagInserts = actions.tagIds.map((tagId: string) => ({
+                    line_user_id: user.id,
+                    tag_id: tagId
+                }))
+                await supabase.from('line_user_tags').upsert(tagInserts, { onConflict: 'line_user_id,tag_id' })
+            }
+
+            // 2. ステップ配信開始
+            if (actions.scenarioId) {
+                const { data: scenario } = await supabase
+                    .from('step_scenarios')
+                    .select('*, step_messages(*)')
+                    .eq('id', actions.scenarioId)
+                    .single()
+
+                if (scenario && scenario.step_messages.length > 0) {
+                    const firstMsg = scenario.step_messages.sort((a: any, b: any) => a.step_order - b.step_order)[0]
+                    const delayMinutes = firstMsg.delay_minutes
+                    const nextSendAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+
+                    await supabase.from('step_executions').insert({
+                        scenario_id: scenario.id,
+                        line_user_id: user.id,
+                        current_step: 1,
+                        next_send_at: nextSendAt,
+                        status: 'active'
+                    })
+                }
+            }
+
+            // 3. テキスト返信
+            if (actions.replyText) {
+                // Postbackに対する応答としてreplyMessageを使用したいが、这里ではreplyTokenが渡されていない
+                // なのでpushMessageを使用する。もしreplyTokenがあればreplyMessageを使うべき。
+                // 引数にevent全体を渡すように変更するのがベストだが、今回はpushMessageで対応
+                await lineClient.pushMessage(lineUserId, [{ type: 'text', text: actions.replyText }])
+            }
+
+            console.log(`カスタムアクション実行完了: ${messageId} -> ${lineUserId}`)
+        }
+    } catch (error) {
+        console.error('Postback処理エラー:', error)
     }
 }
 

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
-import type { Message, Tag } from '@/types'
+import type { Message, Tag, StepScenario } from '@/types'
 import {
     Send,
     Clock,
@@ -21,6 +21,10 @@ import {
     Calendar,
     Upload,
     Trash2,
+    Settings,
+    Link,
+    MessageSquare,
+    Play
 } from 'lucide-react'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -31,9 +35,23 @@ interface MessageBlock {
     imageUrl?: string
     videoUrl?: string
     previewUrl?: string
-    linkUrl?: string // リッチメッセージ用
+    linkUrl?: string // リッチメッセージ用 (旧)
     width?: number // アスペクト比計算用
     height?: number
+    imageType?: 'normal' | 'rich' // 画像タイプ
+    customActions?: {
+        tagIds?: string[]
+        scenarioId?: string
+        replyText?: string
+        redirectUrl?: string
+    }
+}
+
+interface User {
+    id: string
+    line_user_id: string
+    display_name: string
+    picture_url?: string
 }
 
 const MAX_BLOCKS = 5
@@ -42,9 +60,13 @@ const MAX_TEXT_LENGTH = 5000
 export default function MessagesPage() {
     const [messages, setMessages] = useState<Message[]>([])
     const [tags, setTags] = useState<Tag[]>([])
+    const [scenarios, setScenarios] = useState<StepScenario[]>([])
     const [friendsCount, setFriendsCount] = useState(0)
     const [loading, setLoading] = useState(true)
     const [currentChannelId, setCurrentChannelId] = useState<string | null>(null)
+    const [testUsers, setTestUsers] = useState<User[]>([])
+    const [isTestSending, setIsTestSending] = useState(false)
+    const [showTestModal, setShowTestModal] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
     const [sending, setSending] = useState(false)
 
@@ -54,6 +76,9 @@ export default function MessagesPage() {
     const [formSelectedTags, setFormSelectedTags] = useState<string[]>([])
     const [formScheduled, setFormScheduled] = useState(false)
     const [formScheduledAt, setFormScheduledAt] = useState('')
+
+    const [newTagName, setNewTagName] = useState('')
+    const [isCreatingTag, setIsCreatingTag] = useState(false)
 
     const [uploadingIndex, setUploadingIndex] = useState<number | null>(null)
 
@@ -117,6 +142,16 @@ export default function MessagesPage() {
             setTags(tagsData)
         }
 
+        const { data: scenariosData } = await supabase
+            .from('step_scenarios')
+            .select('*')
+            .eq('channel_id', channelId)
+            .eq('is_active', true)
+
+        if (scenariosData) {
+            setScenarios(scenariosData)
+        }
+
         const { count } = await supabase
             .from('line_users')
             .select('*', { count: 'exact', head: true })
@@ -124,6 +159,17 @@ export default function MessagesPage() {
             .eq('is_blocked', false)
 
         setFriendsCount(count || 0)
+
+        const { data: usersData } = await supabase
+            .from('line_users')
+            .select('id, line_user_id, display_name, picture_url')
+            .eq('channel_id', channelId)
+            .eq('is_blocked', false)
+            .limit(20) // テスト配信用に上位20名のみ取得
+
+        if (usersData) {
+            setTestUsers(usersData)
+        }
     }
 
     const resetForm = () => {
@@ -141,6 +187,27 @@ export default function MessagesPage() {
                 ? prev.filter(id => id !== tagId)
                 : [...prev, tagId]
         )
+    }
+
+    const handleCreateTag = async () => {
+        if (!newTagName.trim() || !currentChannelId) return
+
+        const supabase = createClient()
+        const { data, error } = await supabase.from('tags').insert({
+            channel_id: currentChannelId,
+            name: newTagName,
+            color: '#3B82F6', // Default color
+            priority: 0
+        }).select().single()
+
+        if (data) {
+            setTags([...tags, data])
+            setNewTagName('')
+            setIsCreatingTag(false)
+        } else {
+            console.error('タグ作成エラー:', error)
+            alert('タグの作成に失敗しました')
+        }
     }
 
     const addBlock = (type: MessageType) => {
@@ -213,7 +280,14 @@ export default function MessagesPage() {
                         type: 'image',
                         originalContentUrl: block.imageUrl,
                         previewImageUrl: block.imageUrl,
-                        linkUrl: block.linkUrl, // 独自拡張プロパティ
+                        // linkUrlは廃止し、customActions.redirectUrlに統合するか、互換性のために残す
+                        // ここではcustomActionsを優先使用
+                        customActions: block.customActions ? {
+                            tagIds: block.customActions.tagIds?.length ? block.customActions.tagIds : undefined,
+                            scenarioId: block.customActions.scenarioId,
+                            replyText: block.customActions.replyText,
+                            redirectUrl: block.customActions.redirectUrl
+                        } : undefined,
                         aspectRatio: block.width && block.height ? block.width / block.height : undefined,
                     }
                 case 'video':
@@ -292,6 +366,34 @@ export default function MessagesPage() {
         }
 
         setSending(false)
+    }
+
+    const handleTestSend = async (userId: string) => {
+        if (!isFormValid() || !currentChannelId) return
+
+        if (!confirm('テスト送信を行いますか？')) return
+
+        setIsTestSending(true)
+        try {
+            const content = buildMessageContent()
+            const response = await fetch('/api/messages/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channelId: currentChannelId,
+                    userId,
+                    content
+                }),
+            })
+
+            if (!response.ok) throw new Error('Failed to send test message')
+            alert('テスト送信が完了しました')
+            setShowTestModal(false)
+        } catch (error) {
+            console.error('Test send error:', error)
+            alert('テスト送信に失敗しました')
+        }
+        setIsTestSending(false)
     }
 
     const getStatusIcon = (status: Message['status']) => {
@@ -442,23 +544,180 @@ export default function MessagesPage() {
                                                             className="max-h-48 rounded-lg object-contain bg-slate-100"
                                                         />
                                                         <button
-                                                            onClick={() => updateBlock(index, { imageUrl: undefined, linkUrl: undefined })}
+                                                            onClick={() => updateBlock(index, { imageUrl: undefined, linkUrl: undefined, customActions: undefined })}
                                                             className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded-full"
                                                         >
                                                             <X className="w-4 h-4" />
                                                         </button>
                                                     </div>
-                                                    <div className="space-y-1">
-                                                        <Label className="text-xs text-slate-500">
-                                                            画像のリンク先URL (任意 - 設定するとタップで遷移します)
-                                                        </Label>
-                                                        <Input
-                                                            type="url"
-                                                            placeholder="https://example.com"
-                                                            value={block.linkUrl || ''}
-                                                            onChange={(e) => updateBlock(index, { linkUrl: e.target.value })}
-                                                            className="text-sm"
-                                                        />
+
+                                                    <div className="space-y-4 pt-2 border-t border-slate-100 dark:border-slate-700">
+                                                        {/* 画像タイプ選択 */}
+                                                        <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-lg">
+                                                            <button
+                                                                onClick={() => updateBlock(index, { imageType: 'normal' })}
+                                                                className={cn(
+                                                                    "flex-1 py-1.5 text-xs font-medium rounded-md transition-all",
+                                                                    (!block.imageType || block.imageType === 'normal')
+                                                                        ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm"
+                                                                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                                                                )}
+                                                            >
+                                                                通常画像
+                                                            </button>
+                                                            <button
+                                                                onClick={() => updateBlock(index, { imageType: 'rich' })}
+                                                                className={cn(
+                                                                    "flex-1 py-1.5 text-xs font-medium rounded-md transition-all",
+                                                                    block.imageType === 'rich'
+                                                                        ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm"
+                                                                        : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                                                                )}
+                                                            >
+                                                                リッチメッセージ（アクション付き）
+                                                            </button>
+                                                        </div>
+
+                                                        {block.imageType === 'rich' && (
+                                                            <>
+                                                                <Label className="text-sm font-medium flex items-center gap-2">
+                                                                    <Settings className="w-4 h-4" />
+                                                                    アクション設定（画像をタップした時の動作）
+                                                                </Label>
+
+                                                                {/* アクション設定グリッド */}
+                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                                    {/* タグ付け */}
+                                                                    <div className="space-y-2">
+                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1">
+                                                                            <TagIcon className="w-3 h-3" />
+                                                                            タグを付与
+                                                                        </Label>
+                                                                        <div className="flex flex-wrap gap-2 p-2 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                                            {tags.map(tag => (
+                                                                                <button
+                                                                                    key={tag.id}
+                                                                                    onClick={() => {
+                                                                                        const currentIds = block.customActions?.tagIds || []
+                                                                                        const newIds = currentIds.includes(tag.id)
+                                                                                            ? currentIds.filter(id => id !== tag.id)
+                                                                                            : [...currentIds, tag.id]
+
+                                                                                        const updatedActions = {
+                                                                                            ...block.customActions,
+                                                                                            tagIds: newIds
+                                                                                        }
+                                                                                        updateBlock(index, { customActions: updatedActions })
+                                                                                    }}
+                                                                                    className={cn(
+                                                                                        "px-2 py-1 rounded-full text-xs font-medium transition-colors",
+                                                                                        (block.customActions?.tagIds || []).includes(tag.id)
+                                                                                            ? "text-white"
+                                                                                            : "bg-white dark:bg-slate-800 text-slate-600 border border-slate-200"
+                                                                                    )}
+                                                                                    style={(block.customActions?.tagIds || []).includes(tag.id) ? { backgroundColor: tag.color } : {}}
+                                                                                >
+                                                                                    {tag.name}
+                                                                                </button>
+                                                                            ))}
+                                                                            {tags.length === 0 && <span className="text-xs text-slate-400">タグがありません</span>}
+
+                                                                            {isCreatingTag ? (
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <Input
+                                                                                        value={newTagName}
+                                                                                        onChange={(e) => setNewTagName(e.target.value)}
+                                                                                        placeholder="タグ名"
+                                                                                        className="h-6 w-24 text-xs px-1"
+                                                                                        autoFocus
+                                                                                    />
+                                                                                    <button onClick={handleCreateTag} className="text-emerald-500 hover:bg-emerald-50 p-0.5 rounded">
+                                                                                        <CheckCircle className="w-4 h-4" />
+                                                                                    </button>
+                                                                                    <button onClick={() => setIsCreatingTag(false)} className="text-slate-400 hover:bg-slate-100 p-0.5 rounded">
+                                                                                        <X className="w-4 h-4" />
+                                                                                    </button>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <button
+                                                                                    onClick={() => setIsCreatingTag(true)}
+                                                                                    className="px-2 py-1 rounded-full text-xs font-medium border border-dashed border-slate-300 text-slate-400 hover:text-slate-600 hover:border-slate-400 flex items-center gap-1"
+                                                                                >
+                                                                                    <Plus className="w-3 h-3" />
+                                                                                    新規作成
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* ステップ配信 */}
+                                                                    <div className="space-y-2">
+                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1">
+                                                                            <Play className="w-3 h-3" />
+                                                                            ステップ配信を開始
+                                                                        </Label>
+                                                                        <select
+                                                                            className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 dark:bg-slate-900 dark:border-slate-700"
+                                                                            value={block.customActions?.scenarioId || ''}
+                                                                            onChange={(e) => {
+                                                                                const updatedActions = {
+                                                                                    ...block.customActions,
+                                                                                    scenarioId: e.target.value || undefined
+                                                                                }
+                                                                                updateBlock(index, { customActions: updatedActions })
+                                                                            }}
+                                                                        >
+                                                                            <option value="">(なし)</option>
+                                                                            {scenarios.map(scenario => (
+                                                                                <option key={scenario.id} value={scenario.id}>
+                                                                                    {scenario.name}
+                                                                                </option>
+                                                                            ))}
+                                                                        </select>
+                                                                    </div>
+
+                                                                    {/* 自動返信 */}
+                                                                    <div className="space-y-2">
+                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1">
+                                                                            <MessageSquare className="w-3 h-3" />
+                                                                            テキストを返信
+                                                                        </Label>
+                                                                        <Input
+                                                                            className="text-sm"
+                                                                            placeholder="例: ご応募ありがとうございます！"
+                                                                            value={block.customActions?.replyText || ''}
+                                                                            onChange={(e) => {
+                                                                                const updatedActions = {
+                                                                                    ...block.customActions,
+                                                                                    replyText: e.target.value || undefined
+                                                                                }
+                                                                                updateBlock(index, { customActions: updatedActions })
+                                                                            }}
+                                                                        />
+                                                                    </div>
+
+                                                                    {/* URL遷移 */}
+                                                                    <div className="space-y-2">
+                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1">
+                                                                            <Link className="w-3 h-3" />
+                                                                            Webページを開く
+                                                                        </Label>
+                                                                        <Input
+                                                                            className="text-sm"
+                                                                            placeholder="https://example.com"
+                                                                            value={block.customActions?.redirectUrl || ''}
+                                                                            onChange={(e) => {
+                                                                                const updatedActions = {
+                                                                                    ...block.customActions,
+                                                                                    redirectUrl: e.target.value || undefined
+                                                                                }
+                                                                                updateBlock(index, { customActions: updatedActions })
+                                                                            }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </div>
                                             ) : (
@@ -620,13 +879,30 @@ export default function MessagesPage() {
                         </div>
 
                         <div className="flex gap-2 justify-end">
-                            <Button variant="outline" onClick={resetForm}>
-                                キャンセル
+                            <Button
+                                variant="outline"
+                                onClick={() => setShowTestModal(true)}
+                                disabled={sending || !isFormValid()}
+                            >
+                                <Send className="w-4 h-4 mr-2" />
+                                テスト送信
                             </Button>
-                            <Button onClick={handleSend} disabled={sending || !isFormValid()}>
-                                {sending && <Loader2 className="w-4 h-4 animate-spin" />}
-                                {formScheduled ? <Calendar className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-                                {formScheduled ? '予約する' : '今すぐ配信'}
+                            <Button
+                                onClick={handleSend}
+                                disabled={sending || !isFormValid()}
+                                className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white"
+                            >
+                                {sending ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                        送信中...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Send className="w-4 h-4 mr-2" />
+                                        {formScheduled ? '予約する' : '配信する'}
+                                    </>
+                                )}
                             </Button>
                         </div>
                     </CardContent>
@@ -686,6 +962,52 @@ export default function MessagesPage() {
                     </div>
                 )}
             </div>
+
+            {/* テスト送信モーダル */}
+            {showTestModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <Card className="w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col">
+                        <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4">
+                            <CardTitle className="text-lg">テスト送信先を選択</CardTitle>
+                            <button onClick={() => setShowTestModal(false)} className="p-2 hover:bg-slate-100 rounded-full">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </CardHeader>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                            {testUsers.length === 0 ? (
+                                <div className="text-center py-8 text-slate-500">
+                                    <p>送信可能な友だちが見つかりません</p>
+                                </div>
+                            ) : (
+                                testUsers.map(user => (
+                                    <button
+                                        key={user.id}
+                                        onClick={() => handleTestSend(user.line_user_id)}
+                                        disabled={isTestSending}
+                                        className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-left group"
+                                    >
+                                        <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0">
+                                            {user.picture_url ? (
+                                                <img src={user.picture_url} alt={user.display_name} className="w-full h-full object-cover" />
+                                            ) : (
+                                                <div className="w-full h-full flex items-center justify-center text-slate-400">
+                                                    <Type className="w-5 h-5" />
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <p className="font-medium text-slate-900 dark:text-slate-100 truncate">
+                                                {user.display_name}
+                                            </p>
+                                        </div>
+                                        <Send className="w-4 h-4 text-slate-400 group-hover:text-emerald-500 transition-colors opacity-0 group-hover:opacity-100" />
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
         </div>
     )
 }
