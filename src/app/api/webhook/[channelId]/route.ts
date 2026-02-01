@@ -383,7 +383,7 @@ async function handlePostback(
             // ユーザーID解決
             const { data: user } = await supabase
                 .from('line_users')
-                .select('id')
+                .select('id, display_name')
                 .eq('channel_id', channel.id)
                 .eq('line_user_id', lineUserId)
                 .single()
@@ -424,10 +424,11 @@ async function handlePostback(
 
             // 3. テキスト返信
             if (actions.replyText) {
-                // Postbackに対する応答としてreplyMessageを使用したいが、这里ではreplyTokenが渡されていない
+                const replyText = actions.replyText.replace(/{name}/g, user.display_name || '友だち')
+
+                // Postbackに対する応答としてreplyMessageを使用したいが、ここではreplyTokenが渡されていない
                 // なのでpushMessageを使用する。もしreplyTokenがあればreplyMessageを使うべき。
-                // 引数にevent全体を渡すように変更するのがベストだが、今回はpushMessageで対応
-                await lineClient.pushMessage(lineUserId, [{ type: 'text', text: actions.replyText }])
+                await lineClient.pushMessage(lineUserId, [{ type: 'text', text: replyText }])
             }
 
             console.log(`カスタムアクション実行完了: ${messageId} -> ${lineUserId}`)

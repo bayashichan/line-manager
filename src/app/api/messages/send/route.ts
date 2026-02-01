@@ -140,13 +140,60 @@ export async function POST(request: NextRequest) {
             return block
         })
 
-        for (const batch of batches) {
-            try {
-                await lineClient.multicast(batch, processedContent)
-                successCount += batch.length
-            } catch (error) {
-                console.error('配信エラー:', error)
-                failureCount += batch.length
+        // {name}プレースホルダーが含まれているかチェック
+        const hasNamePlaceholder = processedContent.some((block: any) =>
+            (block.type === 'text' && block.text?.includes('{name}'))
+            // Flex Message (リッチメッセージ) の中身までは再帰的にチェックしていませんが、現状の構成ならtextブロックが主
+        )
+
+        if (hasNamePlaceholder) {
+            // 個別送信モード（プッシュメッセージ）
+            // 名前を取得するために再度クエリを実行（recipientsにはid, line_user_idしか含まれていない可能性があるため）
+            // ※ 元のクエリでdisplay_nameも取得していれば再クエリ不要だが、念のため安全策
+            const { data: usersWithProfile } = await adminClient
+                .from('line_users')
+                .select('line_user_id, display_name')
+                .in('line_user_id', lineUserIds)
+
+            const userMap = new Map(usersWithProfile?.map(u => [u.line_user_id, u.display_name]) || [])
+
+            // 10件ずつの並列処理で送信（レートリミット対策）
+            const pushBatches = chunk(lineUserIds, 10)
+
+            for (const batch of pushBatches) {
+                await Promise.all(batch.map(async (userId) => {
+                    try {
+                        const displayName = userMap.get(userId) || '友だち'
+
+                        // コンテンツ内の{name}を置換
+                        const personalizedContent = processedContent.map((block: any) => {
+                            if (block.type === 'text') {
+                                return {
+                                    ...block,
+                                    text: block.text.replace(/{name}/g, displayName)
+                                }
+                            }
+                            return block
+                        })
+
+                        await lineClient.pushMessage(userId, personalizedContent)
+                        successCount++
+                    } catch (error) {
+                        console.error(`個別送信エラー (${userId}):`, error)
+                        failureCount++
+                    }
+                }))
+            }
+        } else {
+            // 通常の一斉送信モード（マルチキャスト）
+            for (const batch of batches) {
+                try {
+                    await lineClient.multicast(batch, processedContent)
+                    successCount += batch.length
+                } catch (error) {
+                    console.error('配信エラー:', error)
+                    failureCount += batch.length
+                }
             }
         }
 

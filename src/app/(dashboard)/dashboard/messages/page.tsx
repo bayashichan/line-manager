@@ -511,17 +511,37 @@ export default function MessagesPage() {
 
                                     {block.type === 'text' && (
                                         <>
-                                            <textarea
-                                                value={block.text || ''}
-                                                onChange={(e) => updateBlock(index, { text: e.target.value })}
-                                                placeholder="メッセージを入力..."
-                                                className={cn(
-                                                    "w-full h-32 px-3 py-2 rounded-lg border bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:bg-slate-900 resize-none",
-                                                    (block.text?.length || 0) > MAX_TEXT_LENGTH
-                                                        ? "border-red-500 focus:ring-red-500"
-                                                        : "border-slate-200 dark:border-slate-700"
-                                                )}
-                                            />
+                                            <div className="relative">
+                                                <textarea
+                                                    value={block.text || ''}
+                                                    onChange={(e) => updateBlock(index, { text: e.target.value })}
+                                                    placeholder="メッセージを入力... {name}で友だちの名前を挿入できます"
+                                                    className={cn(
+                                                        "w-full h-32 px-3 py-2 rounded-lg border bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:bg-slate-900 resize-none",
+                                                        (block.text?.length || 0) > MAX_TEXT_LENGTH
+                                                            ? "border-red-500 focus:ring-red-500"
+                                                            : "border-slate-200 dark:border-slate-700"
+                                                    )}
+                                                />
+                                                <button
+                                                    onClick={() => {
+                                                        const textArea = document.activeElement as HTMLTextAreaElement
+                                                        const current = block.text || ''
+                                                        // カーソル位置があればそこに挿入、なければ末尾
+                                                        /* 
+                                                          注: Reactのstate更新とカーソル位置維持は少し複雑ですが、
+                                                          簡易的に末尾挿入または現状維持とします。
+                                                          本格的なカーソル制御はuseRefが必要ですが、
+                                                          ここではシンプルに "末尾に追加" とします。
+                                                         */
+                                                        updateBlock(index, { text: current + '{name}' })
+                                                    }}
+                                                    className="absolute bottom-2 right-2 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600 transition-colors"
+                                                    title="友だちの名前を挿入"
+                                                >
+                                                    {'{name}'} 挿入
+                                                </button>
+                                            </div>
                                             <div className="text-right text-xs mt-1">
                                                 <span className={cn(
                                                     (block.text?.length || 0) > MAX_TEXT_LENGTH ? "text-red-500 font-bold" : "text-slate-400"
@@ -678,13 +698,28 @@ export default function MessagesPage() {
 
                                                                     {/* 自動返信 */}
                                                                     <div className="space-y-2">
-                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1">
-                                                                            <MessageSquare className="w-3 h-3" />
-                                                                            テキストを返信
+                                                                        <Label className="text-xs text-slate-500 flex items-center gap-1 justify-between">
+                                                                            <div className="flex items-center gap-1">
+                                                                                <MessageSquare className="w-3 h-3" />
+                                                                                テキストを返信
+                                                                            </div>
+                                                                            <button
+                                                                                className="text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
+                                                                                onClick={() => {
+                                                                                    const current = block.customActions?.replyText || ''
+                                                                                    const updatedActions = {
+                                                                                        ...block.customActions,
+                                                                                        replyText: current + '{name}'
+                                                                                    }
+                                                                                    updateBlock(index, { customActions: updatedActions })
+                                                                                }}
+                                                                            >
+                                                                                {'{name}'}を挿入
+                                                                            </button>
                                                                         </Label>
                                                                         <Input
                                                                             className="text-sm"
-                                                                            placeholder="例: ご応募ありがとうございます！"
+                                                                            placeholder="例: {name}さん、ご応募ありがとうございます！"
                                                                             value={block.customActions?.replyText || ''}
                                                                             onChange={(e) => {
                                                                                 const updatedActions = {

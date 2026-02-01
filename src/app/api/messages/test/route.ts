@@ -96,7 +96,28 @@ export async function POST(request: NextRequest) {
             }
         })
 
-        await lineClient.pushMessage(userId, processedContent)
+        // テスト送信先のユーザー情報を取得（名前置換用）
+        const { data: testUser } = await supabase
+            .from('line_users')
+            .select('display_name')
+            .eq('channel_id', channelId)
+            .eq('line_user_id', userId)
+            .single()
+
+        const displayName = testUser?.display_name || '友だち'
+
+        // {name}の置換処理
+        const personalizedContent = processedContent.map((block: any) => {
+            if (block.type === 'text' && block.text) {
+                return {
+                    ...block,
+                    text: block.text.replace(/{name}/g, displayName)
+                }
+            }
+            return block
+        })
+
+        await lineClient.pushMessage(userId, personalizedContent)
 
         return NextResponse.json({ success: true })
 
