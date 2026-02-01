@@ -55,6 +55,7 @@ function ChatsPage() {
 
     const supabase = createClient()
     const messagesEndRef = useRef<HTMLDivElement>(null)
+    const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
 
     // 表示名取得ヘルパー (LINE名を優先、なければ管理名)
     const getDisplayName = (user: ChatUser) => {
@@ -680,8 +681,12 @@ function ChatsPage() {
                                     <Textarea
                                         value={newMessage}
                                         onChange={(e) => setNewMessage(e.target.value)}
+                                        onFocus={() => setIsInputFocused(true)}
+                                        onBlur={() => setIsInputFocused(false)}
                                         placeholder={selectedFile ? "メッセージを追加（任意）..." : "メッセージを入力... (Enter=改行, Cmd+Enter=送信)"}
-                                        className="min-h-[44px] max-h-[200px] resize-none py-3 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
+                                        className={`resize-none py-3 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 transition-all duration-300 ease-in-out ${isInputFocused ? 'min-h-[160px]' : 'min-h-[44px]'
+                                            }`}
+                                        style={{ maxHeight: '400px' }}
                                         disabled={isSending}
                                         onKeyDown={(e) => {
                                             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
