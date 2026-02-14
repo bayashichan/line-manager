@@ -78,12 +78,41 @@ export async function processRichMenuSwitchOnTagRemove(
 
 /**
  * ユーザーに適用すべきリッチメニューを判定
+ * 優先順位: 表示期間内メニュー > タグ連動メニュー > デフォルトメニュー
  */
 async function determineRichMenuForUser(
     supabase: ReturnType<typeof createAdminClient>,
     lineUserId: string
 ): Promise<string | null> {
-    // ユーザーの全タグを優先度順で取得
+    // ユーザーのチャンネルIDを取得
+    const { data: lineUser } = await supabase
+        .from('line_users')
+        .select('channel_id, channels(default_rich_menu_id)')
+        .eq('id', lineUserId)
+        .single()
+
+    if (!lineUser) return null
+
+    const now = new Date().toISOString()
+
+    // 1. 表示期間内のリッチメニューを優先チェック
+    const { data: periodMenus } = await supabase
+        .from('rich_menus')
+        .select('id')
+        .eq('channel_id', lineUser.channel_id)
+        .not('display_period_start', 'is', null)
+        .not('display_period_end', 'is', null)
+        .lte('display_period_start', now)
+        .gte('display_period_end', now)
+        .not('rich_menu_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+    if (periodMenus && periodMenus.length > 0) {
+        return periodMenus[0].id
+    }
+
+    // 2. ユーザーの全タグを優先度順で取得（タグ連動メニュー）
     const { data: userTags, error } = await supabase
         .from('line_user_tags')
         .select(`
@@ -109,13 +138,7 @@ async function determineRichMenuForUser(
         }
     }
 
-    // なければデフォルトリッチメニューを返す
-    const { data: lineUser } = await supabase
-        .from('line_users')
-        .select('channels(default_rich_menu_id)')
-        .eq('id', lineUserId)
-        .single()
-
+    // 3. なければデフォルトリッチメニューを返す
     return (lineUser?.channels as any)?.default_rich_menu_id || null
 }
 

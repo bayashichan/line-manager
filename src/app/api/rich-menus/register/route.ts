@@ -102,6 +102,28 @@ export async function POST(request: NextRequest) {
                 .eq('id', channel.id)
         }
 
+        // 5. 表示期間が設定されていて、現在が期間内であれば即座に適用
+        const now = new Date()
+        const periodStart = richMenu.display_period_start ? new Date(richMenu.display_period_start) : null
+        const periodEnd = richMenu.display_period_end ? new Date(richMenu.display_period_end) : null
+
+        if (periodStart && periodEnd && now >= periodStart && now <= periodEnd) {
+            try {
+                await lineClient.setDefaultRichMenu(lineRichMenuId)
+
+                // is_active フラグを立てる
+                await adminClient
+                    .from('rich_menus')
+                    .update({ is_active: true })
+                    .eq('id', richMenuId)
+
+                console.log(`表示期間内のため即座に適用: ${richMenu.name}`)
+            } catch (err) {
+                console.error('期間メニュー即時適用エラー:', err)
+                // 適用失敗してもメニュー作成自体は成功なので続行
+            }
+        }
+
         return NextResponse.json({
             success: true,
             lineRichMenuId,
