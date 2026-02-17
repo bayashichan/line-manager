@@ -83,7 +83,8 @@ export async function GET(request: NextRequest) {
                     const firstMsg = scenario.step_messages.sort((a: any, b: any) => a.step_order - b.step_order)[0]
                     const delayMinutes = firstMsg.delay_minutes
                     const sendHour = firstMsg.send_hour ?? null
-                    const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
+                    const sendMinute = firstMsg.send_minute ?? 0
+                    const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour, sendMinute)
 
                     await supabase.from('step_executions').insert({
                         scenario_id: scenario.id,

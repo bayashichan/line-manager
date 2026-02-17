@@ -19,6 +19,9 @@ import {
     Tag as TagIcon,
     ChevronDown,
     ChevronUp,
+    Users,
+    Rocket,
+    Search,
 } from 'lucide-react'
 
 interface StepScenarioWithMessages extends StepScenario {
@@ -29,7 +32,15 @@ interface StepScenarioWithMessages extends StepScenario {
 interface FormStep {
     delayDays: number
     sendHour: number | null
+    sendMinute: number
     content: string
+}
+
+interface LineUser {
+    id: string
+    display_name: string
+    picture_url: string | null
+    line_user_id: string
 }
 
 export default function StepPage() {
@@ -47,8 +58,20 @@ export default function StepPage() {
     const [formTriggerType, setFormTriggerType] = useState<'follow' | 'tag_assigned'>('follow')
     const [formTriggerTagId, setFormTriggerTagId] = useState<string | null>(null)
     const [formSteps, setFormSteps] = useState<FormStep[]>([
-        { delayDays: 0, sendHour: null, content: '' }
+        { delayDays: 0, sendHour: null, sendMinute: 0, content: '' }
     ])
+
+    // 手動開始モーダル
+    const [manualStartScenario, setManualStartScenario] = useState<StepScenarioWithMessages | null>(null)
+    const [manualTargetType, setManualTargetType] = useState<'users' | 'tag'>('users')
+    const [manualStartStep, setManualStartStep] = useState(1)
+    const [manualTagId, setManualTagId] = useState<string | null>(null)
+    const [manualSelectedUsers, setManualSelectedUsers] = useState<string[]>([])
+    const [manualSearchQuery, setManualSearchQuery] = useState('')
+    const [allUsers, setAllUsers] = useState<LineUser[]>([])
+    const [loadingUsers, setLoadingUsers] = useState(false)
+    const [manualStarting, setManualStarting] = useState(false)
+    const [manualResult, setManualResult] = useState<string | null>(null)
 
     useEffect(() => {
         fetchChannelAndData()
@@ -60,16 +83,13 @@ export default function StepPage() {
 
         if (!user) return
 
-        // CookieからチャンネルIDを取得
         const savedChannelId = getCookie('line-manager-channel-id')
 
-        // チャンネル取得
         let query = supabase
             .from('channel_members')
             .select('channel_id')
             .eq('profile_id', user.id)
 
-        // Cookieがある場合はそのチャンネルを検索
         if (savedChannelId) {
             query = query.eq('channel_id', savedChannelId)
         } else {
@@ -90,7 +110,6 @@ export default function StepPage() {
     const fetchData = async (channelId: string) => {
         const supabase = createClient()
 
-        // シナリオ一覧取得
         const { data: scenariosData } = await supabase
             .from('step_scenarios')
             .select(`
@@ -102,7 +121,6 @@ export default function StepPage() {
             .order('created_at', { ascending: false })
 
         if (scenariosData) {
-            // step_messagesをstep_order順にソート
             const sorted = scenariosData.map(s => ({
                 ...s,
                 step_messages: (s.step_messages || []).sort((a: StepMessage, b: StepMessage) => a.step_order - b.step_order)
@@ -110,7 +128,6 @@ export default function StepPage() {
             setScenarios(sorted as StepScenarioWithMessages[])
         }
 
-        // タグ一覧取得
         const { data: tagsData } = await supabase
             .from('tags')
             .select('*')
@@ -122,14 +139,31 @@ export default function StepPage() {
         }
     }
 
-    // delay_minutesから日数に変換
+    const fetchUsers = async () => {
+        if (!currentChannelId || allUsers.length > 0) return
+        setLoadingUsers(true)
+        const supabase = createClient()
+        const { data } = await supabase
+            .from('line_users')
+            .select('id, display_name, picture_url, line_user_id')
+            .eq('channel_id', currentChannelId)
+            .eq('is_blocked', false)
+            .order('display_name')
+            .limit(500)
+
+        if (data) {
+            setAllUsers(data as LineUser[])
+        }
+        setLoadingUsers(false)
+    }
+
     const minutesToDays = (minutes: number): number => Math.floor(minutes / 1440)
 
     const resetForm = () => {
         setFormName('')
         setFormTriggerType('follow')
         setFormTriggerTagId(null)
-        setFormSteps([{ delayDays: 0, sendHour: null, content: '' }])
+        setFormSteps([{ delayDays: 0, sendHour: null, sendMinute: 0, content: '' }])
         setEditingScenario(null)
         setIsCreating(false)
     }
@@ -148,6 +182,7 @@ export default function StepPage() {
             scenario.step_messages.map(sm => ({
                 delayDays: minutesToDays(sm.delay_minutes),
                 sendHour: sm.send_hour ?? null,
+                sendMinute: sm.send_minute ?? 0,
                 content: (sm.content as any)?.[0]?.text || '',
             }))
         )
@@ -155,7 +190,7 @@ export default function StepPage() {
     }
 
     const addStep = () => {
-        setFormSteps([...formSteps, { delayDays: 1, sendHour: 10, content: '' }]) // デフォルト1日後の10:00
+        setFormSteps([...formSteps, { delayDays: 1, sendHour: 10, sendMinute: 0, content: '' }])
     }
 
     const removeStep = (index: number) => {
@@ -166,13 +201,13 @@ export default function StepPage() {
     const updateStep = (index: number, field: keyof FormStep, value: any) => {
         const updated = [...formSteps]
         updated[index] = { ...updated[index], [field]: value }
-        // 「即時」を選んだ場合、sendHourをnullに
         if (field === 'delayDays' && value === 0) {
             updated[index].sendHour = null
+            updated[index].sendMinute = 0
         }
-        // 日数が1以上でsendHourがnullの場合、デフォルト10:00を設定
         if (field === 'delayDays' && value > 0 && updated[index].sendHour === null) {
             updated[index].sendHour = 10
+            updated[index].sendMinute = 0
         }
         setFormSteps(updated)
     }
@@ -185,7 +220,6 @@ export default function StepPage() {
 
         try {
             if (editingScenario) {
-                // 更新
                 await supabase
                     .from('step_scenarios')
                     .update({
@@ -195,24 +229,22 @@ export default function StepPage() {
                     })
                     .eq('id', editingScenario.id)
 
-                // 既存のステップを削除
                 await supabase
                     .from('step_messages')
                     .delete()
                     .eq('scenario_id', editingScenario.id)
 
-                // 新しいステップを追加
                 for (let i = 0; i < formSteps.length; i++) {
                     await supabase.from('step_messages').insert({
                         scenario_id: editingScenario.id,
                         step_order: i + 1,
                         delay_minutes: formSteps[i].delayDays * 1440,
                         send_hour: formSteps[i].sendHour,
+                        send_minute: formSteps[i].sendMinute,
                         content: [{ type: 'text', text: formSteps[i].content }],
                     })
                 }
             } else {
-                // 新規作成
                 const { data: scenario } = await supabase
                     .from('step_scenarios')
                     .insert({
@@ -232,6 +264,7 @@ export default function StepPage() {
                             step_order: i + 1,
                             delay_minutes: formSteps[i].delayDays * 1440,
                             send_hour: formSteps[i].sendHour,
+                            send_minute: formSteps[i].sendMinute,
                             content: [{ type: 'text', text: formSteps[i].content }],
                         })
                     }
@@ -269,6 +302,78 @@ export default function StepPage() {
             await fetchData(currentChannelId)
         }
     }
+
+    // 手動開始モーダル
+    const openManualStart = async (scenario: StepScenarioWithMessages) => {
+        setManualStartScenario(scenario)
+        setManualTargetType('users')
+        setManualStartStep(1)
+        setManualTagId(null)
+        setManualSelectedUsers([])
+        setManualSearchQuery('')
+        setManualResult(null)
+        await fetchUsers()
+    }
+
+    const closeManualStart = () => {
+        setManualStartScenario(null)
+        setManualResult(null)
+    }
+
+    const toggleUserSelection = (userId: string) => {
+        setManualSelectedUsers(prev =>
+            prev.includes(userId)
+                ? prev.filter(id => id !== userId)
+                : [...prev, userId]
+        )
+    }
+
+    const selectAllFilteredUsers = () => {
+        const filtered = filteredUsers.map(u => u.id)
+        const allSelected = filtered.every(id => manualSelectedUsers.includes(id))
+        if (allSelected) {
+            setManualSelectedUsers(prev => prev.filter(id => !filtered.includes(id)))
+        } else {
+            setManualSelectedUsers(prev => [...new Set([...prev, ...filtered])])
+        }
+    }
+
+    const handleManualStart = async () => {
+        if (!manualStartScenario) return
+
+        setManualStarting(true)
+        setManualResult(null)
+
+        try {
+            const res = await fetch('/api/step-executions/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    scenarioId: manualStartScenario.id,
+                    startStep: manualStartStep,
+                    targetType: manualTargetType,
+                    userIds: manualTargetType === 'users' ? manualSelectedUsers : undefined,
+                    tagId: manualTargetType === 'tag' ? manualTagId : undefined,
+                }),
+            })
+
+            const data = await res.json()
+
+            if (res.ok) {
+                setManualResult(data.message)
+            } else {
+                setManualResult(`エラー: ${data.error}`)
+            }
+        } catch (error) {
+            setManualResult('エラーが発生しました')
+        }
+
+        setManualStarting(false)
+    }
+
+    const filteredUsers = allUsers.filter(u =>
+        u.display_name?.toLowerCase().includes(manualSearchQuery.toLowerCase())
+    )
 
     if (loading) {
         return (
@@ -397,7 +502,17 @@ export default function StepPage() {
                                                     className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800"
                                                 >
                                                     {Array.from({ length: 24 }, (_, h) => (
-                                                        <option key={h} value={h}>{h}:00</option>
+                                                        <option key={h} value={h}>{h}</option>
+                                                    ))}
+                                                </select>
+                                                <span className="text-sm text-slate-500">:</span>
+                                                <select
+                                                    value={step.sendMinute}
+                                                    onChange={(e) => updateStep(index, 'sendMinute', parseInt(e.target.value))}
+                                                    className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800"
+                                                >
+                                                    {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map(m => (
+                                                        <option key={m} value={m}>{m.toString().padStart(2, '0')}</option>
                                                     ))}
                                                 </select>
                                             </>
@@ -468,6 +583,13 @@ export default function StepPage() {
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button
+                                        onClick={(e) => { e.stopPropagation(); openManualStart(scenario) }}
+                                        className="p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
+                                        title="手動で配信開始"
+                                    >
+                                        <Rocket className="w-4 h-4" />
+                                    </button>
+                                    <button
                                         onClick={(e) => { e.stopPropagation(); toggleActive(scenario.id, scenario.is_active) }}
                                         className={cn(
                                             "p-2 rounded-lg transition-colors",
@@ -510,7 +632,7 @@ export default function StepPage() {
                                             <div className="flex-1">
                                                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
                                                     <Clock className="w-3 h-3" />
-                                                    {formatDelayMinutes(step.delay_minutes, step.send_hour)}
+                                                    {formatDelayMinutes(step.delay_minutes, step.send_hour, step.send_minute)}
                                                 </div>
                                                 <p className="text-sm line-clamp-2">
                                                     {(step.content as any)?.[0]?.text || '（メッセージなし）'}
@@ -536,6 +658,191 @@ export default function StepPage() {
                     <Button onClick={startCreating}>
                         最初のシナリオを作成
                     </Button>
+                </div>
+            )}
+
+            {/* 手動開始モーダル */}
+            {manualStartScenario && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto shadow-2xl">
+                        <div className="p-6 space-y-5">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-lg font-bold flex items-center gap-2">
+                                    <Rocket className="w-5 h-5 text-blue-600" />
+                                    配信開始
+                                </h2>
+                                <button onClick={closeManualStart} className="p-2 hover:bg-slate-100 rounded-lg">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                                <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                                    {manualStartScenario.name}
+                                </p>
+                                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                                    {manualStartScenario.step_messages.length}ステップ
+                                </p>
+                            </div>
+
+                            {/* 開始ステップ */}
+                            <div className="space-y-2">
+                                <Label>開始ステップ</Label>
+                                <select
+                                    value={manualStartStep}
+                                    onChange={(e) => setManualStartStep(parseInt(e.target.value))}
+                                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
+                                >
+                                    {manualStartScenario.step_messages.map((sm, i) => (
+                                        <option key={sm.id} value={sm.step_order}>
+                                            ステップ {sm.step_order}: {formatDelayMinutes(sm.delay_minutes, sm.send_hour, sm.send_minute)} — {(sm.content as any)?.[0]?.text?.substring(0, 30) || ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* 対象タイプ */}
+                            <div className="space-y-2">
+                                <Label>対象</Label>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setManualTargetType('users')}
+                                        className={cn(
+                                            "flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors",
+                                            manualTargetType === 'users'
+                                                ? "bg-blue-600 text-white"
+                                                : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200"
+                                        )}
+                                    >
+                                        <Users className="w-4 h-4 inline mr-1" />
+                                        友だち選択
+                                    </button>
+                                    <button
+                                        onClick={() => setManualTargetType('tag')}
+                                        className={cn(
+                                            "flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors",
+                                            manualTargetType === 'tag'
+                                                ? "bg-blue-600 text-white"
+                                                : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200"
+                                        )}
+                                    >
+                                        <TagIcon className="w-4 h-4 inline mr-1" />
+                                        タグ選択
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* 友だち選択 */}
+                            {manualTargetType === 'users' && (
+                                <div className="space-y-2">
+                                    <div className="relative">
+                                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                        <input
+                                            type="text"
+                                            value={manualSearchQuery}
+                                            onChange={(e) => setManualSearchQuery(e.target.value)}
+                                            placeholder="友だちを検索..."
+                                            className="w-full h-10 pl-10 pr-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
+                                        />
+                                    </div>
+
+                                    {loadingUsers ? (
+                                        <div className="flex justify-center py-4">
+                                            <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="flex items-center justify-between text-xs text-slate-500">
+                                                <span>{manualSelectedUsers.length}人を選択中</span>
+                                                <button
+                                                    onClick={selectAllFilteredUsers}
+                                                    className="text-blue-600 hover:underline"
+                                                >
+                                                    表示中を全選択/解除
+                                                </button>
+                                            </div>
+                                            <div className="max-h-48 overflow-y-auto space-y-1 border border-slate-200 dark:border-slate-700 rounded-lg p-1">
+                                                {filteredUsers.map(user => (
+                                                    <label
+                                                        key={user.id}
+                                                        className={cn(
+                                                            "flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors",
+                                                            manualSelectedUsers.includes(user.id)
+                                                                ? "bg-blue-50 dark:bg-blue-900/20"
+                                                                : "hover:bg-slate-50 dark:hover:bg-slate-800"
+                                                        )}
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={manualSelectedUsers.includes(user.id)}
+                                                            onChange={() => toggleUserSelection(user.id)}
+                                                            className="w-4 h-4 rounded text-blue-600"
+                                                        />
+                                                        {user.picture_url && (
+                                                            <img src={user.picture_url} alt="" className="w-7 h-7 rounded-full" />
+                                                        )}
+                                                        <span className="text-sm truncate">{user.display_name || '名前なし'}</span>
+                                                    </label>
+                                                ))}
+                                                {filteredUsers.length === 0 && (
+                                                    <p className="text-sm text-slate-400 text-center py-4">該当する友だちが見つかりません</p>
+                                                )}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* タグ選択 */}
+                            {manualTargetType === 'tag' && (
+                                <div className="space-y-2">
+                                    <Label>対象タグ</Label>
+                                    <select
+                                        value={manualTagId || ''}
+                                        onChange={(e) => setManualTagId(e.target.value || null)}
+                                        className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
+                                    >
+                                        <option value="">タグを選択</option>
+                                        {tags.map(tag => (
+                                            <option key={tag.id} value={tag.id}>{tag.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+
+                            {/* 結果メッセージ */}
+                            {manualResult && (
+                                <div className={cn(
+                                    "p-3 rounded-lg text-sm",
+                                    manualResult.startsWith('エラー')
+                                        ? "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                                        : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                                )}>
+                                    {manualResult}
+                                </div>
+                            )}
+
+                            {/* 開始ボタン */}
+                            <div className="flex gap-2 justify-end">
+                                <Button variant="outline" onClick={closeManualStart}>
+                                    閉じる
+                                </Button>
+                                <Button
+                                    onClick={handleManualStart}
+                                    disabled={
+                                        manualStarting ||
+                                        (manualTargetType === 'users' && manualSelectedUsers.length === 0) ||
+                                        (manualTargetType === 'tag' && !manualTagId)
+                                    }
+                                    className="bg-blue-600 hover:bg-blue-700"
+                                >
+                                    {manualStarting && <Loader2 className="w-4 h-4 animate-spin" />}
+                                    <Rocket className="w-4 h-4" />
+                                    配信開始
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

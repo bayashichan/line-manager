@@ -97,7 +97,8 @@ export async function GET(request: NextRequest) {
                     const nextSendAt = calculateNextSendAt(
                         new Date(),
                         nextStep.delay_minutes,
-                        nextStep.send_hour ?? null
+                        nextStep.send_hour ?? null,
+                        nextStep.send_minute ?? 0
                     )
 
                     await supabase

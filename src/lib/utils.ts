@@ -58,11 +58,14 @@ export function getRelativeTime(date: string | Date): string {
 /**
  * ステップ配信のタイミングを人間が読みやすい形式に変換
  */
-export function formatDelayMinutes(minutes: number, sendHour?: number | null): string {
+export function formatDelayMinutes(minutes: number, sendHour?: number | null, sendMinute?: number): string {
     if (minutes === 0 && (sendHour === null || sendHour === undefined)) return '即時'
 
     const days = Math.floor(minutes / 1440)
-    const timeStr = sendHour !== null && sendHour !== undefined ? `${sendHour}:00` : ''
+    const min = sendMinute ?? 0
+    const timeStr = sendHour !== null && sendHour !== undefined
+        ? `${sendHour}:${min.toString().padStart(2, '0')}`
+        : ''
 
     if (days === 0 && timeStr) return `当日 ${timeStr}`
     if (days === 0) {
@@ -78,11 +81,13 @@ export function formatDelayMinutes(minutes: number, sendHour?: number | null): s
  * @param triggerTime トリガー発火時刻
  * @param delayMinutes 遅延（分）※日数指定の場合は1440の倍数
  * @param sendHour 送信時刻（0-23、JST）。nullの場合は即時
+ * @param sendMinute 送信分（0-59、JST）。デフォルト0
  */
 export function calculateNextSendAt(
     triggerTime: Date,
     delayMinutes: number,
-    sendHour: number | null
+    sendHour: number | null,
+    sendMinute: number = 0
 ): string {
     if (sendHour === null || sendHour === undefined) {
         // 従来の即時送信モード（delay_minutes基準）
@@ -100,7 +105,7 @@ export function calculateNextSendAt(
     targetDateJST.setUTCDate(targetDateJST.getUTCDate() + delayDays)
 
     // 指定時刻をセット（JST）
-    targetDateJST.setUTCHours(sendHour, 0, 0, 0)
+    targetDateJST.setUTCHours(sendHour, sendMinute, 0, 0)
 
     // UTCに戻す
     const targetUTC = new Date(targetDateJST.getTime() - jstOffset)

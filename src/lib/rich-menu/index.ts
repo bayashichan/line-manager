@@ -203,7 +203,8 @@ async function startTagStepScenarios(
       id,
       step_messages (
         delay_minutes,
-        send_hour
+        send_hour,
+        send_minute
       )
     `)
         .eq('trigger_type', 'tag_assigned')
@@ -228,7 +229,8 @@ async function startTagStepScenarios(
         const firstMessage = scenario.step_messages?.[0]
         const delayMinutes = firstMessage?.delay_minutes || 0
         const sendHour = firstMessage?.send_hour ?? null
-        const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
+        const sendMinute = firstMessage?.send_minute ?? 0
+        const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour, sendMinute)
 
         await supabase.from('step_executions').insert({
             scenario_id: scenario.id,

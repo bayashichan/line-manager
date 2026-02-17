@@ -155,6 +155,7 @@ export interface StepMessage {
     step_order: number
     delay_minutes: number
     send_hour: number | null
+    send_minute: number
     content: MessageContent[]
     created_at: string
     updated_at: string
