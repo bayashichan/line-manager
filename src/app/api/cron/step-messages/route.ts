@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
+import { calculateNextSendAt } from '@/lib/utils'
 
 /**
  * ステップ配信を処理するCronジョブ
@@ -93,9 +94,11 @@ export async function GET(request: NextRequest) {
 
                 if (nextStep) {
                     // 次のステップへ進む
-                    const nextSendAt = new Date(
-                        Date.now() + nextStep.delay_minutes * 60000
-                    ).toISOString()
+                    const nextSendAt = calculateNextSendAt(
+                        new Date(),
+                        nextStep.delay_minutes,
+                        nextStep.send_hour ?? null
+                    )
 
                     await supabase
                         .from('step_executions')

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateSignature, LineClient } from '@/lib/line'
+import { calculateNextSendAt } from '@/lib/utils'
+import type { Channel } from '@/types'
 
 interface WebhookEvent {
     type: string
@@ -210,7 +212,7 @@ async function handleFollow(
                 if (tagError) {
                     console.error('自動タグ付けエラー:', tagError)
                 } else {
-                    console.log(`自動タグ付け完了: ${tagInserts.length}件`)
+                    console.log(`自動タグ付け完了: ${tagInserts.length} 件`)
 
                     // タグに応じたリッチメニュー切り替え判定
                     // 新規ユーザーなのでデフォルトが適用済みだが、タグ優先度が高いものがあれば上書きする
@@ -245,7 +247,7 @@ async function handleUnfollow(
             .eq('channel_id', channelId)
             .eq('line_user_id', userId)
 
-        console.log(`友だちブロック/削除: ${userId}`)
+        console.log(`友だちブロック / 削除: ${userId} `)
     } catch (error) {
         console.error('アンフォロー処理エラー:', error)
     }
@@ -263,11 +265,12 @@ async function startFollowStepScenarios(
     const { data: scenarios } = await supabase
         .from('step_scenarios')
         .select(`
-      id,
-      step_messages (
-        delay_minutes
-      )
-    `)
+id,
+    step_messages(
+        delay_minutes,
+        send_hour
+    )
+        `)
         .eq('channel_id', channelId)
         .eq('trigger_type', 'follow')
         .eq('is_active', true)
@@ -278,7 +281,8 @@ async function startFollowStepScenarios(
     for (const scenario of scenarios) {
         const firstMessage = scenario.step_messages?.[0]
         const delayMinutes = firstMessage?.delay_minutes || 0
-        const nextSendAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+        const sendHour = firstMessage?.send_hour ?? null
+        const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
 
         await supabase.from('step_executions').insert({
             scenario_id: scenario.id,
@@ -410,7 +414,8 @@ async function handlePostback(
                 if (scenario && scenario.step_messages.length > 0) {
                     const firstMsg = scenario.step_messages.sort((a: any, b: any) => a.step_order - b.step_order)[0]
                     const delayMinutes = firstMsg.delay_minutes
-                    const nextSendAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+                    const sendHour = firstMsg.send_hour ?? null
+                    const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
 
                     await supabase.from('step_executions').insert({
                         scenario_id: scenario.id,
@@ -431,7 +436,7 @@ async function handlePostback(
                 await lineClient.pushMessage(lineUserId, [{ type: 'text', text: replyText }])
             }
 
-            console.log(`カスタムアクション実行完了: ${messageId} -> ${lineUserId}`)
+            console.log(`カスタムアクション実行完了: ${messageId} -> ${lineUserId} `)
         }
     } catch (error) {
         console.error('Postback処理エラー:', error)
@@ -454,5 +459,5 @@ async function forwardWebhook(url: string, bodyText: string, headers: Headers) {
         },
         body: bodyText
     })
-    console.log(`Webhook転送成功: ${url}`)
+    console.log(`Webhook転送成功: ${url} `)
 }

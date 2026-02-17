@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
+import { calculateNextSendAt } from '@/lib/utils'
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams
@@ -81,7 +82,8 @@ export async function GET(request: NextRequest) {
                     // 今回は新規開始のみ実装
                     const firstMsg = scenario.step_messages.sort((a: any, b: any) => a.step_order - b.step_order)[0]
                     const delayMinutes = firstMsg.delay_minutes
-                    const nextSendAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+                    const sendHour = firstMsg.send_hour ?? null
+                    const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
 
                     await supabase.from('step_executions').insert({
                         scenario_id: scenario.id,

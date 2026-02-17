@@ -154,6 +154,7 @@ export interface StepMessage {
     scenario_id: string
     step_order: number
     delay_minutes: number
+    send_hour: number | null
     content: MessageContent[]
     created_at: string
     updated_at: string

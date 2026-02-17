@@ -6,7 +6,7 @@
         },
         {
             "path": "/api/cron/step-messages",
-            "schedule": "0 0 * * *"
+            "schedule": "0 * * * *"
         },
         {
             "path": "/api/cron/rich-menu-switch",

@@ -56,12 +56,61 @@ export function getRelativeTime(date: string | Date): string {
 }
 
 /**
- * 分を人間が読みやすい形式に変換
+ * ステップ配信のタイミングを人間が読みやすい形式に変換
  */
-export function formatDelayMinutes(minutes: number): string {
-    if (minutes < 60) return `${minutes}分後`
-    if (minutes < 1440) return `${Math.floor(minutes / 60)}時間後`
-    return `${Math.floor(minutes / 1440)}日後`
+export function formatDelayMinutes(minutes: number, sendHour?: number | null): string {
+    if (minutes === 0 && (sendHour === null || sendHour === undefined)) return '即時'
+
+    const days = Math.floor(minutes / 1440)
+    const timeStr = sendHour !== null && sendHour !== undefined ? `${sendHour}:00` : ''
+
+    if (days === 0 && timeStr) return `当日 ${timeStr}`
+    if (days === 0) {
+        if (minutes < 60) return `${minutes}分後`
+        return `${Math.floor(minutes / 60)}時間後`
+    }
+
+    return timeStr ? `${days}日後 ${timeStr}` : `${days}日後`
+}
+
+/**
+ * 次の送信時刻を計算（JST基準）
+ * @param triggerTime トリガー発火時刻
+ * @param delayMinutes 遅延（分）※日数指定の場合は1440の倍数
+ * @param sendHour 送信時刻（0-23、JST）。nullの場合は即時
+ */
+export function calculateNextSendAt(
+    triggerTime: Date,
+    delayMinutes: number,
+    sendHour: number | null
+): string {
+    if (sendHour === null || sendHour === undefined) {
+        // 従来の即時送信モード（delay_minutes基準）
+        return new Date(triggerTime.getTime() + delayMinutes * 60000).toISOString()
+    }
+
+    // JST基準で日付計算（UTC+9）
+    const jstOffset = 9 * 60 * 60 * 1000
+    const triggerJST = new Date(triggerTime.getTime() + jstOffset)
+
+    // トリガー日のJST 0:00を基準にdelay_days日後
+    const delayDays = Math.floor(delayMinutes / 1440)
+    const targetDateJST = new Date(triggerJST)
+    targetDateJST.setUTCHours(0, 0, 0, 0)
+    targetDateJST.setUTCDate(targetDateJST.getUTCDate() + delayDays)
+
+    // 指定時刻をセット（JST）
+    targetDateJST.setUTCHours(sendHour, 0, 0, 0)
+
+    // UTCに戻す
+    const targetUTC = new Date(targetDateJST.getTime() - jstOffset)
+
+    // もし計算結果が過去なら、翌日にずらす
+    if (targetUTC <= triggerTime) {
+        targetUTC.setUTCDate(targetUTC.getUTCDate() + 1)
+    }
+
+    return targetUTC.toISOString()
 }
 
 /**

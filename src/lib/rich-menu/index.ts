@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
+import { calculateNextSendAt } from '@/lib/utils'
 import type { Tag, RichMenu } from '@/types'
 
 /**
@@ -201,7 +202,8 @@ async function startTagStepScenarios(
         .select(`
       id,
       step_messages (
-        delay_minutes
+        delay_minutes,
+        send_hour
       )
     `)
         .eq('trigger_type', 'tag_assigned')
@@ -225,7 +227,8 @@ async function startTagStepScenarios(
 
         const firstMessage = scenario.step_messages?.[0]
         const delayMinutes = firstMessage?.delay_minutes || 0
-        const nextSendAt = new Date(Date.now() + delayMinutes * 60000).toISOString()
+        const sendHour = firstMessage?.send_hour ?? null
+        const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour)
 
         await supabase.from('step_executions').insert({
             scenario_id: scenario.id,

@@ -26,6 +26,12 @@ interface StepScenarioWithMessages extends StepScenario {
     trigger_tag?: Tag
 }
 
+interface FormStep {
+    delayDays: number
+    sendHour: number | null
+    content: string
+}
+
 export default function StepPage() {
     const [scenarios, setScenarios] = useState<StepScenarioWithMessages[]>([])
     const [tags, setTags] = useState<Tag[]>([])
@@ -40,8 +46,8 @@ export default function StepPage() {
     const [formName, setFormName] = useState('')
     const [formTriggerType, setFormTriggerType] = useState<'follow' | 'tag_assigned'>('follow')
     const [formTriggerTagId, setFormTriggerTagId] = useState<string | null>(null)
-    const [formSteps, setFormSteps] = useState<{ delayMinutes: number; content: string }[]>([
-        { delayMinutes: 0, content: '' }
+    const [formSteps, setFormSteps] = useState<FormStep[]>([
+        { delayDays: 0, sendHour: null, content: '' }
     ])
 
     useEffect(() => {
@@ -116,11 +122,14 @@ export default function StepPage() {
         }
     }
 
+    // delay_minutesから日数に変換
+    const minutesToDays = (minutes: number): number => Math.floor(minutes / 1440)
+
     const resetForm = () => {
         setFormName('')
         setFormTriggerType('follow')
         setFormTriggerTagId(null)
-        setFormSteps([{ delayMinutes: 0, content: '' }])
+        setFormSteps([{ delayDays: 0, sendHour: null, content: '' }])
         setEditingScenario(null)
         setIsCreating(false)
     }
@@ -137,7 +146,8 @@ export default function StepPage() {
         setFormTriggerTagId(scenario.trigger_tag_id)
         setFormSteps(
             scenario.step_messages.map(sm => ({
-                delayMinutes: sm.delay_minutes,
+                delayDays: minutesToDays(sm.delay_minutes),
+                sendHour: sm.send_hour ?? null,
                 content: (sm.content as any)?.[0]?.text || '',
             }))
         )
@@ -145,7 +155,7 @@ export default function StepPage() {
     }
 
     const addStep = () => {
-        setFormSteps([...formSteps, { delayMinutes: 1440, content: '' }]) // デフォルト1日後
+        setFormSteps([...formSteps, { delayDays: 1, sendHour: 10, content: '' }]) // デフォルト1日後の10:00
     }
 
     const removeStep = (index: number) => {
@@ -153,9 +163,17 @@ export default function StepPage() {
         setFormSteps(formSteps.filter((_, i) => i !== index))
     }
 
-    const updateStep = (index: number, field: 'delayMinutes' | 'content', value: any) => {
+    const updateStep = (index: number, field: keyof FormStep, value: any) => {
         const updated = [...formSteps]
         updated[index] = { ...updated[index], [field]: value }
+        // 「即時」を選んだ場合、sendHourをnullに
+        if (field === 'delayDays' && value === 0) {
+            updated[index].sendHour = null
+        }
+        // 日数が1以上でsendHourがnullの場合、デフォルト10:00を設定
+        if (field === 'delayDays' && value > 0 && updated[index].sendHour === null) {
+            updated[index].sendHour = 10
+        }
         setFormSteps(updated)
     }
 
@@ -188,7 +206,8 @@ export default function StepPage() {
                     await supabase.from('step_messages').insert({
                         scenario_id: editingScenario.id,
                         step_order: i + 1,
-                        delay_minutes: formSteps[i].delayMinutes,
+                        delay_minutes: formSteps[i].delayDays * 1440,
+                        send_hour: formSteps[i].sendHour,
                         content: [{ type: 'text', text: formSteps[i].content }],
                     })
                 }
@@ -211,7 +230,8 @@ export default function StepPage() {
                         await supabase.from('step_messages').insert({
                             scenario_id: scenario.id,
                             step_order: i + 1,
-                            delay_minutes: formSteps[i].delayMinutes,
+                            delay_minutes: formSteps[i].delayDays * 1440,
+                            send_hour: formSteps[i].sendHour,
                             content: [{ type: 'text', text: formSteps[i].content }],
                         })
                     }
@@ -350,24 +370,38 @@ export default function StepPage() {
                                             </button>
                                         )}
                                     </div>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                         <Clock className="w-4 h-4 text-slate-400" />
                                         <select
-                                            value={step.delayMinutes}
-                                            onChange={(e) => updateStep(index, 'delayMinutes', parseInt(e.target.value))}
+                                            value={step.delayDays}
+                                            onChange={(e) => updateStep(index, 'delayDays', parseInt(e.target.value))}
                                             className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800"
                                         >
                                             <option value={0}>即時</option>
-                                            <option value={5}>5分後</option>
-                                            <option value={30}>30分後</option>
-                                            <option value={60}>1時間後</option>
-                                            <option value={180}>3時間後</option>
-                                            <option value={720}>12時間後</option>
-                                            <option value={1440}>1日後</option>
-                                            <option value={2880}>2日後</option>
-                                            <option value={4320}>3日後</option>
-                                            <option value={10080}>7日後</option>
+                                            <option value={1}>1日後</option>
+                                            <option value={2}>2日後</option>
+                                            <option value={3}>3日後</option>
+                                            <option value={5}>5日後</option>
+                                            <option value={7}>7日後</option>
+                                            <option value={10}>10日後</option>
+                                            <option value={14}>14日後</option>
+                                            <option value={21}>21日後</option>
+                                            <option value={30}>30日後</option>
                                         </select>
+                                        {step.delayDays > 0 && (
+                                            <>
+                                                <span className="text-sm text-slate-500">の</span>
+                                                <select
+                                                    value={step.sendHour ?? 10}
+                                                    onChange={(e) => updateStep(index, 'sendHour', parseInt(e.target.value))}
+                                                    className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800"
+                                                >
+                                                    {Array.from({ length: 24 }, (_, h) => (
+                                                        <option key={h} value={h}>{h}:00</option>
+                                                    ))}
+                                                </select>
+                                            </>
+                                        )}
                                         <span className="text-sm text-slate-500">に配信</span>
                                     </div>
                                     <textarea
@@ -476,7 +510,7 @@ export default function StepPage() {
                                             <div className="flex-1">
                                                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
                                                     <Clock className="w-3 h-3" />
-                                                    {formatDelayMinutes(step.delay_minutes)}
+                                                    {formatDelayMinutes(step.delay_minutes, step.send_hour)}
                                                 </div>
                                                 <p className="text-sm line-clamp-2">
                                                     {(step.content as any)?.[0]?.text || '（メッセージなし）'}
