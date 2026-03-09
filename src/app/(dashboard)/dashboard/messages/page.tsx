@@ -25,7 +25,8 @@ import {
     Link,
     MessageSquare,
     Play,
-    Eye
+    ChevronDown,
+    ChevronUp
 } from 'lucide-react'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -69,7 +70,7 @@ export default function MessagesPage() {
     const [isTestSending, setIsTestSending] = useState(false)
     const [showTestModal, setShowTestModal] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
-    const [selectedMessage, setSelectedMessage] = useState<Message | null>(null)
+    const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null)
     const [sending, setSending] = useState(false)
 
     // フォーム
@@ -1102,7 +1103,14 @@ export default function MessagesPage() {
                 {messages.length > 0 ? (
                     <div className="space-y-3">
                         {messages.map(message => (
-                            <Card key={message.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedMessage(message)}>
+                            <Card
+                                key={message.id}
+                                className={cn(
+                                    "hover:shadow-md transition-shadow cursor-pointer border-l-4",
+                                    expandedMessageId === message.id ? "border-l-emerald-500 dark:border-l-emerald-400" : "border-l-transparent"
+                                )}
+                                onClick={() => setExpandedMessageId(prev => prev === message.id ? null : message.id)}
+                            >
                                 <CardContent className="p-3 sm:p-4">
                                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                                         <div className="flex-1 min-w-0">
@@ -1113,9 +1121,140 @@ export default function MessagesPage() {
                                                 </span>
                                             </div>
                                             <h3 className="font-medium truncate">{message.title}</h3>
-                                            <p className="text-sm text-slate-500 line-clamp-2 mt-1">
-                                                {getMessagePreview(message.content as any[])}
-                                            </p>
+
+                                            {/* 展開時・非展開時の表示切り替え */}
+                                            {expandedMessageId === message.id ? (
+                                                <div className="mt-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+                                                    {(message.content as any[])?.map((block: any, index: number) => (
+                                                        <div key={index} className="rounded-xl bg-slate-50 dark:bg-slate-800 p-4">
+                                                            {block.type === 'text' && (
+                                                                <div className="space-y-2">
+                                                                    <div className="flex items-center gap-2 text-blue-500 mb-2">
+                                                                        <Type className="w-4 h-4" />
+                                                                        <span className="text-xs font-medium">テキスト</span>
+                                                                    </div>
+                                                                    <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words leading-relaxed">
+                                                                        {block.text}
+                                                                    </p>
+                                                                </div>
+                                                            )}
+                                                            {block.type === 'image' && (
+                                                                <div className="space-y-2">
+                                                                    <div className="flex items-center gap-2 text-green-500 mb-2">
+                                                                        <ImageIcon className="w-4 h-4" />
+                                                                        <span className="text-xs font-medium">画像</span>
+                                                                    </div>
+                                                                    {(block.originalContentUrl || block.previewImageUrl) ? (
+                                                                        <img
+                                                                            src={block.originalContentUrl || block.previewImageUrl}
+                                                                            alt="配信画像"
+                                                                            className="max-w-full max-h-80 rounded-lg object-contain bg-white dark:bg-slate-900"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
+                                                                            <span className="text-slate-400">画像を読み込めません</span>
+                                                                        </div>
+                                                                    )}
+                                                                    {block.customActions && (
+                                                                        <div className="mt-3 p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 space-y-1.5">
+                                                                            <p className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                                                                                <Settings className="w-3 h-3" />
+                                                                                アクション設定
+                                                                            </p>
+                                                                            {block.customActions.tagIds?.length > 0 && (
+                                                                                <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                                                    タグ付与: {block.customActions.tagIds.map((tagId: string) => {
+                                                                                        const tag = tags.find(t => t.id === tagId)
+                                                                                        return tag ? tag.name : tagId
+                                                                                    }).join(', ')}
+                                                                                </p>
+                                                                            )}
+                                                                            {block.customActions.scenarioId && (
+                                                                                <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                                                    ステップ配信: {scenarios.find(s => s.id === block.customActions.scenarioId)?.name || block.customActions.scenarioId}
+                                                                                </p>
+                                                                            )}
+                                                                            {block.customActions.replyText && (
+                                                                                <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                                                    返信テキスト: {block.customActions.replyText}
+                                                                                </p>
+                                                                            )}
+                                                                            {block.customActions.redirectUrl && (
+                                                                                <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                                                    遷移先URL: {block.customActions.redirectUrl}
+                                                                                </p>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                            {block.type === 'video' && (
+                                                                <div className="space-y-2">
+                                                                    <div className="flex items-center gap-2 text-purple-500 mb-2">
+                                                                        <Video className="w-4 h-4" />
+                                                                        <span className="text-xs font-medium">動画</span>
+                                                                    </div>
+                                                                    {block.originalContentUrl ? (
+                                                                        <video
+                                                                            src={block.originalContentUrl}
+                                                                            controls
+                                                                            className="max-w-full max-h-80 rounded-lg bg-black"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
+                                                                            <span className="text-slate-400">動画を読み込めません</span>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+
+                                                    {/* フィルタ情報 */}
+                                                    {(message.filter_tags?.length || message.exclude_tags?.length) ? (
+                                                        <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
+                                                            <div className="text-sm font-medium text-slate-500 mb-2">配信対象設定</div>
+                                                            {message.filter_tags && message.filter_tags.length > 0 && (
+                                                                <div className="flex flex-wrap gap-1.5 mb-2">
+                                                                    <span className="text-xs text-slate-400">含む:</span>
+                                                                    {message.filter_tags.map((tagId: string) => {
+                                                                        const tag = tags.find(t => t.id === tagId)
+                                                                        return (
+                                                                            <span
+                                                                                key={tagId}
+                                                                                className="px-2 py-0.5 rounded-full text-xs text-white"
+                                                                                style={{ backgroundColor: tag?.color || '#94a3b8' }}
+                                                                            >
+                                                                                {tag?.name || tagId}
+                                                                            </span>
+                                                                        )
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                            {message.exclude_tags && message.exclude_tags.length > 0 && (
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    <span className="text-xs text-slate-400">除外:</span>
+                                                                    {message.exclude_tags.map((tagId: string) => {
+                                                                        const tag = tags.find(t => t.id === tagId)
+                                                                        return (
+                                                                            <span
+                                                                                key={tagId}
+                                                                                className="px-2 py-0.5 rounded-full text-xs bg-slate-600 text-white line-through"
+                                                                            >
+                                                                                {tag?.name || tagId}
+                                                                            </span>
+                                                                        )
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            ) : (
+                                                <p className="text-sm text-slate-500 line-clamp-2 mt-1">
+                                                    {getMessagePreview(message.content as any[])}
+                                                </p>
+                                            )}
                                         </div>
                                         <div className="flex flex-row sm:flex-col justify-between sm:justify-start items-center sm:items-end text-sm mt-2 sm:mt-0 border-t sm:border-0 pt-2 sm:pt-0 border-slate-100 dark:border-slate-700">
                                             <p className="text-slate-500 text-xs sm:text-sm">
@@ -1142,8 +1281,17 @@ export default function MessagesPage() {
                                                 </div>
                                             )}
                                             <div className="flex items-center gap-1 mt-1 text-slate-400 hover:text-emerald-500 transition-colors">
-                                                <Eye className="w-4 h-4" />
-                                                <span className="text-xs">詳細</span>
+                                                {expandedMessageId === message.id ? (
+                                                    <>
+                                                        <ChevronUp className="w-4 h-4" />
+                                                        <span className="text-xs">閉じる</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <ChevronDown className="w-4 h-4" />
+                                                        <span className="text-xs">詳細</span>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -1204,168 +1352,6 @@ export default function MessagesPage() {
                                         <Send className="w-4 h-4 text-slate-400 group-hover:text-emerald-500 transition-colors opacity-0 group-hover:opacity-100" />
                                     </button>
                                 ))
-                            )}
-                        </div>
-                    </Card>
-                </div>
-            )}
-
-            {/* 配信内容詳細モーダル */}
-            {selectedMessage && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedMessage(null)}>
-                    <Card className="w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-                        <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4">
-                            <div className="flex-1 min-w-0">
-                                <CardTitle className="text-lg truncate">{selectedMessage.title}</CardTitle>
-                                <div className="flex items-center gap-3 mt-2">
-                                    <div className="flex items-center gap-1.5">
-                                        {getStatusIcon(selectedMessage.status)}
-                                        <span className="text-sm text-slate-500">{getStatusText(selectedMessage.status)}</span>
-                                    </div>
-                                    <span className="text-sm text-slate-400">
-                                        {formatDateTime(selectedMessage.created_at)}
-                                    </span>
-                                </div>
-                                {selectedMessage.status === 'sent' && (
-                                    <p className="text-sm text-emerald-600 mt-1">
-                                        {selectedMessage.success_count}/{selectedMessage.total_recipients}人に配信完了
-                                    </p>
-                                )}
-                                {selectedMessage.status === 'scheduled' && selectedMessage.scheduled_at && (
-                                    <p className="text-sm text-amber-600 mt-1">
-                                        {formatDateTime(selectedMessage.scheduled_at)}に配信予定
-                                    </p>
-                                )}
-                            </div>
-                            <button onClick={() => setSelectedMessage(null)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full flex-shrink-0 ml-2">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </CardHeader>
-                        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-                            <div className="text-sm font-medium text-slate-500 mb-2">配信内容</div>
-                            {(selectedMessage.content as any[])?.map((block: any, index: number) => (
-                                <div key={index} className="rounded-xl bg-slate-50 dark:bg-slate-800 p-4">
-                                    {block.type === 'text' && (
-                                        <div className="space-y-2">
-                                            <div className="flex items-center gap-2 text-blue-500 mb-2">
-                                                <Type className="w-4 h-4" />
-                                                <span className="text-xs font-medium">テキスト</span>
-                                            </div>
-                                            <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words leading-relaxed">
-                                                {block.text}
-                                            </p>
-                                        </div>
-                                    )}
-                                    {block.type === 'image' && (
-                                        <div className="space-y-2">
-                                            <div className="flex items-center gap-2 text-green-500 mb-2">
-                                                <ImageIcon className="w-4 h-4" />
-                                                <span className="text-xs font-medium">画像</span>
-                                            </div>
-                                            {(block.originalContentUrl || block.previewImageUrl) ? (
-                                                <img
-                                                    src={block.originalContentUrl || block.previewImageUrl}
-                                                    alt="配信画像"
-                                                    className="max-w-full max-h-80 rounded-lg object-contain bg-white dark:bg-slate-900"
-                                                />
-                                            ) : (
-                                                <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
-                                                    <span className="text-slate-400">画像を読み込めません</span>
-                                                </div>
-                                            )}
-                                            {block.customActions && (
-                                                <div className="mt-3 p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 space-y-1.5">
-                                                    <p className="text-xs font-medium text-slate-500 flex items-center gap-1">
-                                                        <Settings className="w-3 h-3" />
-                                                        アクション設定
-                                                    </p>
-                                                    {block.customActions.tagIds?.length > 0 && (
-                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
-                                                            タグ付与: {block.customActions.tagIds.map((tagId: string) => {
-                                                                const tag = tags.find(t => t.id === tagId)
-                                                                return tag ? tag.name : tagId
-                                                            }).join(', ')}
-                                                        </p>
-                                                    )}
-                                                    {block.customActions.scenarioId && (
-                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
-                                                            ステップ配信: {scenarios.find(s => s.id === block.customActions.scenarioId)?.name || block.customActions.scenarioId}
-                                                        </p>
-                                                    )}
-                                                    {block.customActions.replyText && (
-                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
-                                                            返信テキスト: {block.customActions.replyText}
-                                                        </p>
-                                                    )}
-                                                    {block.customActions.redirectUrl && (
-                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
-                                                            遷移先URL: {block.customActions.redirectUrl}
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                    {block.type === 'video' && (
-                                        <div className="space-y-2">
-                                            <div className="flex items-center gap-2 text-purple-500 mb-2">
-                                                <Video className="w-4 h-4" />
-                                                <span className="text-xs font-medium">動画</span>
-                                            </div>
-                                            {block.originalContentUrl ? (
-                                                <video
-                                                    src={block.originalContentUrl}
-                                                    controls
-                                                    className="max-w-full max-h-80 rounded-lg bg-black"
-                                                />
-                                            ) : (
-                                                <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
-                                                    <span className="text-slate-400">動画を読み込めません</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            ))}
-
-                            {/* フィルタ情報 */}
-                            {(selectedMessage.filter_tags?.length || selectedMessage.exclude_tags?.length) && (
-                                <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
-                                    <div className="text-sm font-medium text-slate-500 mb-2">配信対象設定</div>
-                                    {selectedMessage.filter_tags && selectedMessage.filter_tags.length > 0 && (
-                                        <div className="flex flex-wrap gap-1.5 mb-2">
-                                            <span className="text-xs text-slate-400">含む:</span>
-                                            {selectedMessage.filter_tags.map((tagId: string) => {
-                                                const tag = tags.find(t => t.id === tagId)
-                                                return (
-                                                    <span
-                                                        key={tagId}
-                                                        className="px-2 py-0.5 rounded-full text-xs text-white"
-                                                        style={{ backgroundColor: tag?.color || '#94a3b8' }}
-                                                    >
-                                                        {tag?.name || tagId}
-                                                    </span>
-                                                )
-                                            })}
-                                        </div>
-                                    )}
-                                    {selectedMessage.exclude_tags && selectedMessage.exclude_tags.length > 0 && (
-                                        <div className="flex flex-wrap gap-1.5">
-                                            <span className="text-xs text-slate-400">除外:</span>
-                                            {selectedMessage.exclude_tags.map((tagId: string) => {
-                                                const tag = tags.find(t => t.id === tagId)
-                                                return (
-                                                    <span
-                                                        key={tagId}
-                                                        className="px-2 py-0.5 rounded-full text-xs bg-slate-600 text-white line-through"
-                                                    >
-                                                        {tag?.name || tagId}
-                                                    </span>
-                                                )
-                                            })}
-                                        </div>
-                                    )}
-                                </div>
                             )}
                         </div>
                     </Card>
