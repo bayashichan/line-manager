@@ -103,8 +103,10 @@ export interface Message {
     channel_id: string
     title: string
     content: MessageContent[]
-    status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed'
+    status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled'
+    qstash_message_id?: string | null
     filter_tags: string[] | null
+    exclude_tags: string[] | null
     scheduled_at: string | null
     sent_at: string | null
     total_recipients: number

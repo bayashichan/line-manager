@@ -169,12 +169,12 @@ export async function POST(req: NextRequest) {
                         // Update object in place
                         u.picture_url = profile.pictureUrl
                         u.status_message = profile.statusMessage
-                        // Should we overwrite display_name with LINE's current one? 
-                        // User said: "Csvで取り込んだ友だちの名前は「line表示名」の列をメインに..."
-                        // If CSV has it, maybe prioritize CSV? Or prioritize real LINE data?
-                        // Usually real LINE data is fresher. Let's update display_name too if we got it?
-                        // But user specifically mapped 'LINE表示名' column. 
-                        // Let's stick to CSV for name, but use LINE for pic.
+                        // LMessageのCSV(Shift-JIS)エクスポート時に特殊文字や絵文字が「？？？」に
+                        // 文字化け・欠落する問題があるため、LINE APIから取得できる場合は
+                        // APIの正しいUTF-8の表示名で上書きする
+                        if (profile.displayName) {
+                            u.display_name = profile.displayName
+                        }
                     } else {
                         // console.warn(`Failed to fetch profile for ${u.line_user_id}: ${res.status}`)
                     }

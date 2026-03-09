@@ -1,51 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 
 /**
- * メッセージ送信
- * POST /api/messages/send
+ * QStashからのWebhook受信エンドポイント (予約配信の実行)
+ * POST /api/webhook/qstash-line
  */
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
     try {
-        const supabase = await createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-
-        if (!user) {
-            return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
-        }
-
-        const { messageId } = await request.json()
+        const body = await request.json()
+        const { messageId } = body
 
         if (!messageId) {
-            return NextResponse.json({ error: 'messageId が必要です' }, { status: 400 })
+            console.error('QStash Webhook Error: messageId がありません')
+            return NextResponse.json({ error: 'messageId missing' }, { status: 400 })
         }
 
-        // メッセージ情報取得
         const adminClient = createAdminClient()
+
+        // 1. メッセージ情報の取得
         const { data: message, error: messageError } = await adminClient
             .from('messages')
-            .select(`
-        *,
-        channels (*)
-      `)
+            .select(`*, channels (*)`)
             .eq('id', messageId)
             .single()
 
         if (messageError || !message) {
-            return NextResponse.json({ error: 'メッセージが見つかりません' }, { status: 404 })
+            console.error('QStash Webhook Error: メッセージが見つかりません', messageId)
+            return NextResponse.json({ error: 'Message not found' }, { status: 404 })
         }
 
-        // 配信対象ユーザーを取得
+        // 既に送信済み/処理中の場合はスキップ
+        if (message.status === 'sent' || message.status === 'sending') {
+            console.log(`QStash Webhook: メッセージ ${messageId} は既に処理されています。ステータス: ${message.status}`)
+            return NextResponse.json({ success: true, skipped: true })
+        }
+
+        // ステータスを送信中に更新
+        await adminClient
+            .from('messages')
+            .update({ status: 'sending' })
+            .eq('id', messageId)
+
+
+        // 2. 配信対象ユーザーの取得
         let query = adminClient
             .from('line_users')
             .select('id, line_user_id')
             .eq('channel_id', message.channel_id)
             .eq('is_blocked', false)
 
-        // タグフィルターがある場合
+        // 絞り込み (フィルタータグ)
         if (message.filter_tags && message.filter_tags.length > 0) {
             const { data: filteredUsers } = await adminClient
                 .from('line_user_tags')
@@ -56,11 +63,13 @@ export async function POST(request: NextRequest) {
                 const userIds = [...new Set(filteredUsers.map(u => u.line_user_id))]
                 query = query.in('id', userIds)
             } else {
+                // 該当者なし
+                await completeMessage(adminClient, messageId, 0, 0, 0)
                 return NextResponse.json({ success: true, sent: 0 })
             }
         }
 
-        // タグ除外がある場合
+        // 除外 (除外タグ)
         if (message.exclude_tags && message.exclude_tags.length > 0) {
             const { data: excludedUsers } = await adminClient
                 .from('line_user_tags')
@@ -76,57 +85,34 @@ export async function POST(request: NextRequest) {
         const { data: recipients } = await query
 
         if (!recipients || recipients.length === 0) {
-            await adminClient
-                .from('messages')
-                .update({
-                    status: 'sent',
-                    total_recipients: 0,
-                    success_count: 0,
-                    failure_count: 0,
-                    sent_at: new Date().toISOString(),
-                })
-                .eq('id', messageId)
-
+            await completeMessage(adminClient, messageId, 0, 0, 0)
             return NextResponse.json({ success: true, sent: 0 })
         }
 
-        // LINE クライアント作成
+
+        // 3. LINE APIで送信
         const channel = message.channels as any
         const lineClient = new LineClient(channel.channel_access_token)
 
-        // メッセージ送信（500人ずつバッチ処理）
         const lineUserIds = recipients.map(r => r.line_user_id)
         const batches = chunk(lineUserIds, 500)
 
         let successCount = 0
         let failureCount = 0
 
-        // コンテンツの変換（リッチメッセージをFlex Messageに変換）
+        // コンテンツの変換
         const processedContent = (message.content as any[]).map((block: any) => {
-            // customActionsがある、または旧linkUrlがある場合はFlex Message化
             if (block.type === 'image' && (block.customActions || block.linkUrl)) {
                 let action: any
 
                 if (block.customActions) {
-                    // customActions優先
                     if (block.customActions.redirectUrl) {
-                        action = {
-                            type: 'uri',
-                            uri: block.customActions.redirectUrl
-                        }
+                        action = { type: 'uri', uri: block.customActions.redirectUrl }
                     } else {
-                        // redirectUrlがない場合はPostback (タグ付け、シナリオなどはPostbackイベントで処理)
-                        action = {
-                            type: 'postback',
-                            data: `action=custom&mid=${messageId}`
-                        }
+                        action = { type: 'postback', data: `action=custom&mid=${messageId}` }
                     }
                 } else if (block.linkUrl) {
-                    // 旧仕様互換
-                    action = {
-                        type: 'uri',
-                        uri: block.linkUrl
-                    }
+                    action = { type: 'uri', uri: block.linkUrl }
                 }
 
                 return {
@@ -155,32 +141,25 @@ export async function POST(request: NextRequest) {
             return block
         })
 
-        // {name}プレースホルダーが含まれているかチェック
+        // {name} プレースホルダーの存在確認
         const hasNamePlaceholder = processedContent.some((block: any) =>
             (block.type === 'text' && block.text?.includes('{name}'))
-            // Flex Message (リッチメッセージ) の中身までは再帰的にチェックしていませんが、現状の構成ならtextブロックが主
         )
 
         if (hasNamePlaceholder) {
-            // 個別送信モード（プッシュメッセージ）
-            // 名前を取得するために再度クエリを実行（recipientsにはid, line_user_idしか含まれていない可能性があるため）
-            // ※ 元のクエリでdisplay_nameも取得していれば再クエリ不要だが、念のため安全策
+            // 個別送信モード
             const { data: usersWithProfile } = await adminClient
                 .from('line_users')
                 .select('line_user_id, display_name')
                 .in('line_user_id', lineUserIds)
 
             const userMap = new Map(usersWithProfile?.map(u => [u.line_user_id, u.display_name]) || [])
-
-            // 10件ずつの並列処理で送信（レートリミット対策）
             const pushBatches = chunk(lineUserIds, 10)
 
             for (const batch of pushBatches) {
                 await Promise.all(batch.map(async (userId) => {
                     try {
                         const displayName = userMap.get(userId) || '友だち'
-
-                        // コンテンツ内の{name}を置換
                         const personalizedContent = processedContent.map((block: any) => {
                             if (block.type === 'text') {
                                 return {
@@ -190,7 +169,6 @@ export async function POST(request: NextRequest) {
                             }
                             return block
                         })
-
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
                     } catch (error) {
@@ -200,7 +178,7 @@ export async function POST(request: NextRequest) {
                 }))
             }
         } else {
-            // 通常の一斉送信モード（マルチキャスト）
+            // 一斉送信モード
             for (const batch of batches) {
                 try {
                     await lineClient.multicast(batch, processedContent)
@@ -212,29 +190,30 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // ステータス更新
-        await adminClient
-            .from('messages')
-            .update({
-                status: failureCount === recipients.length ? 'failed' : 'sent',
-                total_recipients: recipients.length,
-                success_count: successCount,
-                failure_count: failureCount,
-                sent_at: new Date().toISOString(),
-            })
-            .eq('id', messageId)
+        // 4. ステータス更新と完了
+        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount)
 
-        return NextResponse.json({
-            success: true,
-            total: recipients.length,
-            successCount,
-            failureCount,
-        })
-    } catch (error) {
-        console.error('メッセージ送信エラー:', error)
-        return NextResponse.json(
-            { error: '内部サーバーエラー' },
-            { status: 500 }
-        )
+        return NextResponse.json({ success: true, successCount, failureCount })
+
+    } catch (error: any) {
+        console.error('QStash Webhook 処理エラー:', error)
+        return NextResponse.json({ error: error?.message || 'Internal Server Error' }, { status: 500 })
     }
 }
+
+// 完了時のDB更新ヘルパー
+async function completeMessage(adminClient: any, messageId: string, total: number, success: number, failure: number) {
+    await adminClient
+        .from('messages')
+        .update({
+            status: 'sent',
+            total_recipients: total,
+            success_count: success,
+            failure_count: failure,
+            sent_at: new Date().toISOString(),
+        })
+        .eq('id', messageId)
+}
+
+// Upstash QStash の署名検証ミドルウェアでラップ
+export const POST = verifySignatureAppRouter(handler)

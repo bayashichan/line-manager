@@ -156,7 +156,7 @@ export default function FriendsPage() {
                         友だち管理
                     </h1>
                     <p className="text-slate-500 dark:text-slate-400 mt-1">
-                        {friends.length}人の友だち
+                        {filteredFriends.length} / {friends.length} 人の友だち
                     </p>
                 </div>
                 <div className="flex gap-2">
@@ -696,41 +696,41 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
             <Card className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto">
-                <CardHeader className="flex flex-row items-start justify-between">
-                    <div className="flex items-center gap-4">
+                <CardHeader className="relative flex flex-col items-start gap-4 sm:flex-row sm:justify-between pr-12">
+                    <button
+                        onClick={onClose}
+                        className="absolute right-4 top-4 p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors z-10"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                    <div className="flex items-center gap-3 sm:gap-4 w-full min-w-0">
                         {friend.picture_url ? (
                             <img
                                 src={friend.picture_url}
                                 alt={friend.display_name || ''}
-                                className="w-16 h-16 rounded-full object-cover"
+                                className="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover shrink-0"
                             />
                         ) : (
-                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center">
-                                <User className="w-8 h-8 text-slate-500" />
+                            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center shrink-0">
+                                <User className="w-6 h-6 sm:w-8 sm:h-8 text-slate-500" />
                             </div>
                         )}
-                        <div>
-                            <CardTitle>{friend.display_name || '名前なし'}</CardTitle>
-                            <p className="text-sm text-slate-500">
+                        <div className="flex-1 min-w-0">
+                            <CardTitle className="truncate text-lg sm:text-xl">{friend.display_name || '名前なし'}</CardTitle>
+                            <p className="text-xs sm:text-sm text-slate-500 truncate mt-1">
                                 {formatDateTime(friend.followed_at)}に追加
                             </p>
                         </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex w-full sm:w-auto mt-2 sm:mt-0">
                         <Button
                             variant="outline"
-                            className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                            className="w-full sm:w-auto text-blue-600 border-blue-200 hover:bg-blue-50"
                             onClick={() => router.push(`/dashboard/chats?userId=${friend.id}`)}
                         >
                             <MessageCircle className="w-4 h-4 mr-2" />
                             チャットを開く
                         </Button>
-                        <button
-                            onClick={onClose}
-                            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                        >
-                            <X className="w-5 h-5" />
-                        </button>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-6">

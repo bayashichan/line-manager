@@ -143,7 +143,14 @@ async function handleFollow(
 ) {
     try {
         // LINEからプロフィールを取得
-        const profile = await lineClient.getProfile(userId)
+        let profile: { displayName: string; pictureUrl?: string; statusMessage?: string } = {
+            displayName: '不明なユーザー'
+        }
+        try {
+            profile = await lineClient.getProfile(userId)
+        } catch (profileError) {
+            console.warn(`プロフィール取得失敗 (userId: ${userId}):`, profileError)
+        }
 
         // 既存ユーザーを確認
         const { data: existingUser } = await supabase

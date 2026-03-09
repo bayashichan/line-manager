@@ -24,7 +24,8 @@ import {
     Settings,
     Link,
     MessageSquare,
-    Play
+    Play,
+    Eye
 } from 'lucide-react'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -68,12 +69,15 @@ export default function MessagesPage() {
     const [isTestSending, setIsTestSending] = useState(false)
     const [showTestModal, setShowTestModal] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
+    const [selectedMessage, setSelectedMessage] = useState<Message | null>(null)
     const [sending, setSending] = useState(false)
 
     // フォーム
     const [formTitle, setFormTitle] = useState('')
     const [formBlocks, setFormBlocks] = useState<MessageBlock[]>([{ type: 'text', text: '' }])
     const [formSelectedTags, setFormSelectedTags] = useState<string[]>([])
+    const [formExcludeTags, setFormExcludeTags] = useState<string[]>([])
+    const [projectedCount, setProjectedCount] = useState<number | null>(null)
     const [formScheduled, setFormScheduled] = useState(false)
     const [formScheduledAt, setFormScheduledAt] = useState('')
 
@@ -85,6 +89,51 @@ export default function MessagesPage() {
     useEffect(() => {
         fetchChannelAndData()
     }, [])
+
+    useEffect(() => {
+        if (!currentChannelId || !isCreating) return
+
+        const calculateAudience = async () => {
+            const supabase = createClient()
+            let query = supabase
+                .from('line_users')
+                .select('id', { count: 'exact', head: true })
+                .eq('channel_id', currentChannelId)
+                .eq('is_blocked', false)
+
+            if (formSelectedTags.length > 0) {
+                const { data: usersWithTags } = await supabase
+                    .from('line_user_tags')
+                    .select('line_user_id')
+                    .in('tag_id', formSelectedTags)
+
+                if (usersWithTags && usersWithTags.length > 0) {
+                    const userIds = [...new Set(usersWithTags.map(u => u.line_user_id))]
+                    query = query.in('id', userIds)
+                } else {
+                    setProjectedCount(0)
+                    return
+                }
+            }
+
+            if (formExcludeTags.length > 0) {
+                const { data: excludedUsers } = await supabase
+                    .from('line_user_tags')
+                    .select('line_user_id')
+                    .in('tag_id', formExcludeTags)
+
+                if (excludedUsers && excludedUsers.length > 0) {
+                    const excludedUserIds = [...new Set(excludedUsers.map(u => u.line_user_id))]
+                    query = query.not('id', 'in', `(${excludedUserIds.join(',')})`)
+                }
+            }
+
+            const { count } = await query
+            setProjectedCount(count || 0)
+        }
+
+        calculateAudience()
+    }, [formSelectedTags, formExcludeTags, currentChannelId, isCreating])
 
     const fetchChannelAndData = async () => {
         const supabase = createClient()
@@ -176,6 +225,8 @@ export default function MessagesPage() {
         setFormTitle('')
         setFormBlocks([{ type: 'text', text: '' }])
         setFormSelectedTags([])
+        setFormExcludeTags([])
+        setProjectedCount(null)
         setFormScheduled(false)
         setFormScheduledAt('')
         setIsCreating(false)
@@ -187,6 +238,16 @@ export default function MessagesPage() {
                 ? prev.filter(id => id !== tagId)
                 : [...prev, tagId]
         )
+        setFormExcludeTags(prev => prev.filter(id => id !== tagId))
+    }
+
+    const toggleExcludeTag = (tagId: string) => {
+        setFormExcludeTags(prev =>
+            prev.includes(tagId)
+                ? prev.filter(id => id !== tagId)
+                : [...prev, tagId]
+        )
+        setFormSelectedTags(prev => prev.filter(id => id !== tagId))
     }
 
     const handleCreateTag = async () => {
@@ -338,6 +399,7 @@ export default function MessagesPage() {
                     content,
                     status,
                     filter_tags: formSelectedTags.length > 0 ? formSelectedTags : null,
+                    exclude_tags: formExcludeTags.length > 0 ? formExcludeTags : null,
                     scheduled_at: scheduledAt,
                 })
                 .select()
@@ -345,7 +407,6 @@ export default function MessagesPage() {
 
             if (error) throw error
 
-            // 即時配信の場合のみ送信
             if (!formScheduled) {
                 const response = await fetch('/api/messages/send', {
                     method: 'POST',
@@ -355,6 +416,16 @@ export default function MessagesPage() {
 
                 if (!response.ok) {
                     throw new Error('送信に失敗しました')
+                }
+            } else {
+                const response = await fetch('/api/schedule-broadcast', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messageId: message.id, scheduledAt }),
+                })
+
+                if (!response.ok) {
+                    throw new Error('予約設定に失敗しました')
                 }
             }
 
@@ -396,6 +467,31 @@ export default function MessagesPage() {
         setIsTestSending(false)
     }
 
+    const handleCancelSchedule = async (messageId: string) => {
+        if (!confirm('この予約配信をキャンセルしますか？')) return
+
+        try {
+            const response = await fetch('/api/messages/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messageId }),
+            })
+
+            if (!response.ok) {
+                const data = await response.json()
+                throw new Error(data.error || 'キャンセルに失敗しました')
+            }
+
+            alert('予約をキャンセルしました')
+            if (currentChannelId) {
+                await fetchData(currentChannelId)
+            }
+        } catch (error: any) {
+            console.error('Cancel error:', error)
+            alert(error.message)
+        }
+    }
+
     const getStatusIcon = (status: Message['status']) => {
         switch (status) {
             case 'sent':
@@ -406,6 +502,8 @@ export default function MessagesPage() {
                 return <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
             case 'scheduled':
                 return <Clock className="w-4 h-4 text-amber-500" />
+            case 'cancelled':
+                return <XCircle className="w-4 h-4 text-slate-400" />
             default:
                 return <AlertCircle className="w-4 h-4 text-slate-400" />
         }
@@ -417,6 +515,7 @@ export default function MessagesPage() {
             case 'failed': return '配信失敗'
             case 'sending': return '配信中'
             case 'scheduled': return '予約中'
+            case 'cancelled': return 'キャンセル済'
             default: return '下書き'
         }
     }
@@ -861,30 +960,83 @@ export default function MessagesPage() {
                         </div>
 
                         {/* タグフィルター */}
-                        <div className="space-y-2">
+                        <div className="space-y-4">
                             <Label className="flex items-center gap-2">
                                 <TagIcon className="w-4 h-4" />
                                 配信対象を絞り込む（任意）
                             </Label>
-                            <div className="flex flex-wrap gap-2">
-                                {tags.map(tag => (
-                                    <button
-                                        key={tag.id}
-                                        onClick={() => toggleTag(tag.id)}
-                                        className={cn(
-                                            "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200",
-                                            formSelectedTags.includes(tag.id)
-                                                ? "text-white shadow-lg"
-                                                : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+
+                            <div className="space-y-3 pl-2 sm:pl-6 border-l-2 border-slate-100 dark:border-slate-800">
+                                <div className="space-y-2">
+                                    <div className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                                        以下のタグを「含む」友だちに配信（OR条件）
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {tags.map(tag => (
+                                            <button
+                                                key={tag.id}
+                                                onClick={() => toggleTag(tag.id)}
+                                                className={cn(
+                                                    "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200",
+                                                    formSelectedTags.includes(tag.id)
+                                                        ? "text-white shadow-md relative pr-8"
+                                                        : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                                                )}
+                                                style={formSelectedTags.includes(tag.id) ? { backgroundColor: tag.color } : {}}
+                                            >
+                                                {tag.name}
+                                                {formSelectedTags.includes(tag.id) && (
+                                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70">
+                                                        <CheckCircle className="w-4 h-4" />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        ))}
+                                        {tags.length === 0 && (
+                                            <p className="text-sm text-slate-500">タグなし（全員に配信）</p>
                                         )}
-                                        style={formSelectedTags.includes(tag.id) ? { backgroundColor: tag.color } : {}}
-                                    >
-                                        {tag.name}
-                                    </button>
-                                ))}
-                                {tags.length === 0 && (
-                                    <p className="text-sm text-slate-500">タグなし（全員に配信）</p>
-                                )}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2 pt-2">
+                                    <div className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                                        以下のタグを「除外する」（除外が優先）
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {tags.map(tag => (
+                                            <button
+                                                key={tag.id}
+                                                onClick={() => toggleExcludeTag(tag.id)}
+                                                className={cn(
+                                                    "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200",
+                                                    formExcludeTags.includes(tag.id)
+                                                        ? "text-white shadow-md relative pr-8 bg-slate-800 dark:bg-slate-600"
+                                                        : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                                                )}
+                                            >
+                                                <span className="line-through opacity-80 decoration-2">{tag.name}</span>
+                                                {formExcludeTags.includes(tag.id) && (
+                                                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-white">
+                                                        <XCircle className="w-4 h-4" />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg flex items-center gap-3">
+                                <div className="bg-white dark:bg-slate-800 p-2 rounded-full shadow-sm">
+                                    <TagIcon className="w-5 h-5 text-blue-500" />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-semibold mb-0.5">現在の配信予定人数（推計）</p>
+                                    <p className="text-2xl font-bold font-mono tracking-tight leading-none">
+                                        {projectedCount !== null ? projectedCount : friendsCount}
+                                        <span className="text-sm font-normal ml-1 text-blue-600/70 dark:text-blue-400/70">人</span>
+                                    </p>
+                                </div>
                             </div>
                         </div>
 
@@ -950,7 +1102,7 @@ export default function MessagesPage() {
                 {messages.length > 0 ? (
                     <div className="space-y-3">
                         {messages.map(message => (
-                            <Card key={message.id} className="hover:shadow-md transition-shadow">
+                            <Card key={message.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedMessage(message)}>
                                 <CardContent className="p-3 sm:p-4">
                                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                                         <div className="flex-1 min-w-0">
@@ -975,10 +1127,24 @@ export default function MessagesPage() {
                                                 </p>
                                             )}
                                             {message.status === 'scheduled' && message.scheduled_at && (
-                                                <p className="text-amber-600 mt-1">
-                                                    {formatDateTime(message.scheduled_at)}に配信予定
-                                                </p>
+                                                <div className="flex flex-col items-end gap-2 mt-1">
+                                                    <p className="text-amber-600">
+                                                        {formatDateTime(message.scheduled_at)}に配信予定
+                                                    </p>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="text-red-500 hover:text-red-600 hover:bg-red-50 h-8 text-xs"
+                                                        onClick={(e) => { e.stopPropagation(); handleCancelSchedule(message.id) }}
+                                                    >
+                                                        予約をキャンセル
+                                                    </Button>
+                                                </div>
                                             )}
+                                            <div className="flex items-center gap-1 mt-1 text-slate-400 hover:text-emerald-500 transition-colors">
+                                                <Eye className="w-4 h-4" />
+                                                <span className="text-xs">詳細</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </CardContent>
@@ -1038,6 +1204,168 @@ export default function MessagesPage() {
                                         <Send className="w-4 h-4 text-slate-400 group-hover:text-emerald-500 transition-colors opacity-0 group-hover:opacity-100" />
                                     </button>
                                 ))
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {/* 配信内容詳細モーダル */}
+            {selectedMessage && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedMessage(null)}>
+                    <Card className="w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4">
+                            <div className="flex-1 min-w-0">
+                                <CardTitle className="text-lg truncate">{selectedMessage.title}</CardTitle>
+                                <div className="flex items-center gap-3 mt-2">
+                                    <div className="flex items-center gap-1.5">
+                                        {getStatusIcon(selectedMessage.status)}
+                                        <span className="text-sm text-slate-500">{getStatusText(selectedMessage.status)}</span>
+                                    </div>
+                                    <span className="text-sm text-slate-400">
+                                        {formatDateTime(selectedMessage.created_at)}
+                                    </span>
+                                </div>
+                                {selectedMessage.status === 'sent' && (
+                                    <p className="text-sm text-emerald-600 mt-1">
+                                        {selectedMessage.success_count}/{selectedMessage.total_recipients}人に配信完了
+                                    </p>
+                                )}
+                                {selectedMessage.status === 'scheduled' && selectedMessage.scheduled_at && (
+                                    <p className="text-sm text-amber-600 mt-1">
+                                        {formatDateTime(selectedMessage.scheduled_at)}に配信予定
+                                    </p>
+                                )}
+                            </div>
+                            <button onClick={() => setSelectedMessage(null)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full flex-shrink-0 ml-2">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </CardHeader>
+                        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                            <div className="text-sm font-medium text-slate-500 mb-2">配信内容</div>
+                            {(selectedMessage.content as any[])?.map((block: any, index: number) => (
+                                <div key={index} className="rounded-xl bg-slate-50 dark:bg-slate-800 p-4">
+                                    {block.type === 'text' && (
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-2 text-blue-500 mb-2">
+                                                <Type className="w-4 h-4" />
+                                                <span className="text-xs font-medium">テキスト</span>
+                                            </div>
+                                            <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words leading-relaxed">
+                                                {block.text}
+                                            </p>
+                                        </div>
+                                    )}
+                                    {block.type === 'image' && (
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-2 text-green-500 mb-2">
+                                                <ImageIcon className="w-4 h-4" />
+                                                <span className="text-xs font-medium">画像</span>
+                                            </div>
+                                            {(block.originalContentUrl || block.previewImageUrl) ? (
+                                                <img
+                                                    src={block.originalContentUrl || block.previewImageUrl}
+                                                    alt="配信画像"
+                                                    className="max-w-full max-h-80 rounded-lg object-contain bg-white dark:bg-slate-900"
+                                                />
+                                            ) : (
+                                                <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
+                                                    <span className="text-slate-400">画像を読み込めません</span>
+                                                </div>
+                                            )}
+                                            {block.customActions && (
+                                                <div className="mt-3 p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 space-y-1.5">
+                                                    <p className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                                                        <Settings className="w-3 h-3" />
+                                                        アクション設定
+                                                    </p>
+                                                    {block.customActions.tagIds?.length > 0 && (
+                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                            タグ付与: {block.customActions.tagIds.map((tagId: string) => {
+                                                                const tag = tags.find(t => t.id === tagId)
+                                                                return tag ? tag.name : tagId
+                                                            }).join(', ')}
+                                                        </p>
+                                                    )}
+                                                    {block.customActions.scenarioId && (
+                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                            ステップ配信: {scenarios.find(s => s.id === block.customActions.scenarioId)?.name || block.customActions.scenarioId}
+                                                        </p>
+                                                    )}
+                                                    {block.customActions.replyText && (
+                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                            返信テキスト: {block.customActions.replyText}
+                                                        </p>
+                                                    )}
+                                                    {block.customActions.redirectUrl && (
+                                                        <p className="text-xs text-slate-600 dark:text-slate-400">
+                                                            遷移先URL: {block.customActions.redirectUrl}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    {block.type === 'video' && (
+                                        <div className="space-y-2">
+                                            <div className="flex items-center gap-2 text-purple-500 mb-2">
+                                                <Video className="w-4 h-4" />
+                                                <span className="text-xs font-medium">動画</span>
+                                            </div>
+                                            {block.originalContentUrl ? (
+                                                <video
+                                                    src={block.originalContentUrl}
+                                                    controls
+                                                    className="max-w-full max-h-80 rounded-lg bg-black"
+                                                />
+                                            ) : (
+                                                <div className="flex items-center justify-center h-32 bg-slate-100 dark:bg-slate-700 rounded-lg">
+                                                    <span className="text-slate-400">動画を読み込めません</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+
+                            {/* フィルタ情報 */}
+                            {(selectedMessage.filter_tags?.length || selectedMessage.exclude_tags?.length) && (
+                                <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
+                                    <div className="text-sm font-medium text-slate-500 mb-2">配信対象設定</div>
+                                    {selectedMessage.filter_tags && selectedMessage.filter_tags.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 mb-2">
+                                            <span className="text-xs text-slate-400">含む:</span>
+                                            {selectedMessage.filter_tags.map((tagId: string) => {
+                                                const tag = tags.find(t => t.id === tagId)
+                                                return (
+                                                    <span
+                                                        key={tagId}
+                                                        className="px-2 py-0.5 rounded-full text-xs text-white"
+                                                        style={{ backgroundColor: tag?.color || '#94a3b8' }}
+                                                    >
+                                                        {tag?.name || tagId}
+                                                    </span>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
+                                    {selectedMessage.exclude_tags && selectedMessage.exclude_tags.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            <span className="text-xs text-slate-400">除外:</span>
+                                            {selectedMessage.exclude_tags.map((tagId: string) => {
+                                                const tag = tags.find(t => t.id === tagId)
+                                                return (
+                                                    <span
+                                                        key={tagId}
+                                                        className="px-2 py-0.5 rounded-full text-xs bg-slate-600 text-white line-through"
+                                                    >
+                                                        {tag?.name || tagId}
+                                                    </span>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
                     </Card>
