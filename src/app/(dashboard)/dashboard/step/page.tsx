@@ -391,6 +391,21 @@ export default function StepPage() {
         setSaving(true)
         const supabase = createClient()
 
+        // 配信日時の早い順にソートして step_order を決定する
+        const sortedSteps = [...formSteps].sort((a, b) => {
+            if (a.delayDays !== b.delayDays) {
+                return a.delayDays - b.delayDays;
+            }
+            if (a.delayDays === 0 && b.delayDays === 0) return 0; // 即時設定同士は追加順序のまま
+
+            const hourA = a.sendHour ?? 0;
+            const hourB = b.sendHour ?? 0;
+            if (hourA !== hourB) {
+                return hourA - hourB;
+            }
+            return (a.sendMinute ?? 0) - (b.sendMinute ?? 0);
+        });
+
         try {
             if (editingScenario) {
                 await supabase
@@ -407,14 +422,14 @@ export default function StepPage() {
                     .delete()
                     .eq('scenario_id', editingScenario.id)
 
-                for (let i = 0; i < formSteps.length; i++) {
+                for (let i = 0; i < sortedSteps.length; i++) {
                     await supabase.from('step_messages').insert({
                         scenario_id: editingScenario.id,
                         step_order: i + 1,
-                        delay_minutes: formSteps[i].delayDays * 1440,
-                        send_hour: formSteps[i].sendHour,
-                        send_minute: formSteps[i].sendMinute,
-                        content: buildContentFromBlocks(formSteps[i].blocks),
+                        delay_minutes: sortedSteps[i].delayDays * 1440,
+                        send_hour: sortedSteps[i].sendHour,
+                        send_minute: sortedSteps[i].sendMinute,
+                        content: buildContentFromBlocks(sortedSteps[i].blocks),
                     })
                 }
             } else {
@@ -431,14 +446,14 @@ export default function StepPage() {
                     .single()
 
                 if (scenario) {
-                    for (let i = 0; i < formSteps.length; i++) {
+                    for (let i = 0; i < sortedSteps.length; i++) {
                         await supabase.from('step_messages').insert({
                             scenario_id: scenario.id,
                             step_order: i + 1,
-                            delay_minutes: formSteps[i].delayDays * 1440,
-                            send_hour: formSteps[i].sendHour,
-                            send_minute: formSteps[i].sendMinute,
-                            content: buildContentFromBlocks(formSteps[i].blocks),
+                            delay_minutes: sortedSteps[i].delayDays * 1440,
+                            send_hour: sortedSteps[i].sendHour,
+                            send_minute: sortedSteps[i].sendMinute,
+                            content: buildContentFromBlocks(sortedSteps[i].blocks),
                         })
                     }
                 }
