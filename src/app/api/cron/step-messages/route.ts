@@ -82,42 +82,109 @@ export async function GET(request: NextRequest) {
 
                 // メッセージ送信
                 try {
-                    await lineClient.pushMessage(lineUser.line_user_id, currentStepMessage.content)
+                    // コンテンツの変換（リッチメッセージをFlex Messageに変換）
+                    let contentArray = Array.isArray(currentStepMessage.content)
+                        ? currentStepMessage.content
+                        : [currentStepMessage.content]
+
+                    const processedContent = contentArray.map((block: any) => {
+                        // customActionsがある、または旧linkUrlがある場合はFlex Message化
+                        if (block.type === 'image' && (block.customActions || block.linkUrl)) {
+                            let action: any
+
+                            if (block.customActions) {
+                                // customActions優先
+                                if (block.customActions.redirectUrl) {
+                                    action = {
+                                        type: 'uri',
+                                        uri: block.customActions.redirectUrl
+                                    }
+                                } else {
+                                    action = {
+                                        type: 'postback',
+                                        data: `action=custom&scenario_id=${scenario.id}`
+                                    }
+                                }
+                            } else if (block.linkUrl) {
+                                // 旧仕様互換
+                                action = {
+                                    type: 'uri',
+                                    uri: block.linkUrl
+                                }
+                            }
+
+                            return {
+                                type: 'flex',
+                                altText: '画像メッセージ',
+                                contents: {
+                                    type: 'bubble',
+                                    body: {
+                                        type: 'box',
+                                        layout: 'vertical',
+                                        contents: [
+                                            {
+                                                type: 'image',
+                                                url: block.originalContentUrl,
+                                                size: 'full',
+                                                aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
+                                                aspectMode: 'cover',
+                                                action: action
+                                            }
+                                        ],
+                                        paddingAll: '0px'
+                                    }
+                                }
+                            }
+                        }
+                        return block
+                    })
+
+                    // {name}置換処理
+                    const displayName = lineUser?.display_name || '友だち'
+                    const personalizedContent = processedContent.map((block: any) => {
+                        if (block.type === 'text' && block.text?.includes('{name}')) {
+                            return {
+                                ...block,
+                                text: block.text.replace(/{name}/g, displayName)
+                            }
+                        }
+                        return block
+                    })
+
+                    await lineClient.pushMessage(lineUser.line_user_id, personalizedContent)
 
                     // チャット履歴への保存処理を追加
                     let textContent = 'ステップ配信メッセージ'
-                    let contentType = 'text'
 
                     // contentが配列（複数メッセージ）の場合の簡易判定
-                    if (Array.isArray(currentStepMessage.content)) {
-                        const firstMsg = currentStepMessage.content[0]
+                    if (personalizedContent.length > 0) {
+                        const firstMsg = personalizedContent[0]
                         if (firstMsg.type === 'text') {
                             textContent = firstMsg.text
-                            contentType = 'text'
                         } else if (firstMsg.type === 'image') {
                             textContent = '画像が送信されました'
-                            contentType = 'image'
                         } else if (firstMsg.type === 'video') {
                             textContent = '動画が送信されました'
-                            contentType = 'video'
                         } else if (firstMsg.type === 'template' || firstMsg.type === 'flex') {
                             textContent = firstMsg.altText || 'リッチメッセージが送信されました'
-                            contentType = firstMsg.type
                         }
-                    } else if (currentStepMessage.content?.type === 'text') {
-                        textContent = currentStepMessage.content.text
-                        contentType = 'text'
                     }
 
-                    // 1. chat_messages へのINSERT
-                    await supabase.from('chat_messages').insert({
-                        channel_id: channel.id,
-                        line_user_id: execution.line_user_id,
-                        sender: 'admin',
-                        content_type: contentType,
-                        content: Array.isArray(currentStepMessage.content) ? currentStepMessage.content[0] : currentStepMessage.content,
-                        read_at: null,
-                    })
+                    // 1. chat_messages へのINSERT（ブロックごとに保存）
+                    for (const block of personalizedContent) {
+                        let contentType = block.type
+                        if (block.type === 'template' || block.type === 'flex') {
+                            contentType = block.type
+                        }
+                        await supabase.from('chat_messages').insert({
+                            channel_id: channel.id,
+                            line_user_id: execution.line_user_id,
+                            sender: 'admin',
+                            content_type: contentType,
+                            content: block,
+                            read_at: null,
+                        })
+                    }
 
                     // 2. line_users の更新
                     await supabase

@@ -22,7 +22,31 @@ import {
     Users,
     Rocket,
     Search,
+    Type,
+    Image as ImageIcon,
+    Video,
+    Settings,
 } from 'lucide-react'
+import imageCompression from 'browser-image-compression'
+
+type MessageType = 'text' | 'image' | 'video'
+
+interface MessageBlock {
+    type: MessageType
+    text?: string
+    imageUrl?: string
+    videoUrl?: string
+    previewUrl?: string
+    width?: number
+    height?: number
+    imageType?: 'normal' | 'rich'
+    customActions?: {
+        tagIds?: string[]
+        scenarioId?: string
+        replyText?: string
+        redirectUrl?: string
+    }
+}
 
 interface StepScenarioWithMessages extends StepScenario {
     step_messages: StepMessage[]
@@ -33,7 +57,7 @@ interface FormStep {
     delayDays: number
     sendHour: number | null
     sendMinute: number
-    content: string
+    blocks: MessageBlock[]
 }
 
 interface LineUser {
@@ -58,8 +82,13 @@ export default function StepPage() {
     const [formTriggerType, setFormTriggerType] = useState<'follow' | 'tag_assigned'>('follow')
     const [formTriggerTagId, setFormTriggerTagId] = useState<string | null>(null)
     const [formSteps, setFormSteps] = useState<FormStep[]>([
-        { delayDays: 0, sendHour: null, sendMinute: 0, content: '' }
+        { delayDays: 0, sendHour: null, sendMinute: 0, blocks: [{ type: 'text', text: '' }] }
     ])
+
+    const [newTagName, setNewTagName] = useState('')
+    const [isCreatingTag, setIsCreatingTag] = useState(false)
+    const [uploadingStepIndex, setUploadingStepIndex] = useState<number | null>(null)
+    const [uploadingBlockIndex, setUploadingBlockIndex] = useState<number | null>(null)
 
     // 手動開始モーダル
     const [manualStartScenario, setManualStartScenario] = useState<StepScenarioWithMessages | null>(null)
@@ -163,7 +192,7 @@ export default function StepPage() {
         setFormName('')
         setFormTriggerType('follow')
         setFormTriggerTagId(null)
-        setFormSteps([{ delayDays: 0, sendHour: null, sendMinute: 0, content: '' }])
+        setFormSteps([{ delayDays: 0, sendHour: null, sendMinute: 0, blocks: [{ type: 'text', text: '' }] }])
         setEditingScenario(null)
         setIsCreating(false)
     }
@@ -178,19 +207,39 @@ export default function StepPage() {
         setFormName(scenario.name)
         setFormTriggerType(scenario.trigger_type)
         setFormTriggerTagId(scenario.trigger_tag_id)
-        setFormSteps(
-            scenario.step_messages.map(sm => ({
+
+        // 既存データ（contentの配列）をMessageBlockの形に変換
+        const mappedSteps = scenario.step_messages.map(sm => {
+            const rawContent = Array.isArray(sm.content) ? sm.content : [sm.content]
+            const blocks: MessageBlock[] = rawContent.map((item: any) => {
+                const base: MessageBlock = { type: item.type as MessageType }
+                if (item.type === 'text') {
+                    base.text = item.text
+                } else if (item.type === 'image') {
+                    base.imageUrl = item.originalContentUrl
+                    base.imageType = item.customActions ? 'rich' : 'normal'
+                    base.customActions = item.customActions
+                } else if (item.type === 'video') {
+                    base.videoUrl = item.originalContentUrl
+                    base.previewUrl = item.previewImageUrl
+                }
+                return base
+            })
+
+            return {
                 delayDays: minutesToDays(sm.delay_minutes),
                 sendHour: sm.send_hour ?? null,
                 sendMinute: sm.send_minute ?? 0,
-                content: (sm.content as any)?.[0]?.text || '',
-            }))
-        )
+                blocks: blocks.length > 0 ? blocks : [{ type: 'text' as MessageType, text: '' }]
+            }
+        })
+
+        setFormSteps(mappedSteps)
         setIsCreating(false)
     }
 
     const addStep = () => {
-        setFormSteps([...formSteps, { delayDays: 1, sendHour: 10, sendMinute: 0, content: '' }])
+        setFormSteps([...formSteps, { delayDays: 1, sendHour: 10, sendMinute: 0, blocks: [{ type: 'text', text: '' }] }])
     }
 
     const removeStep = (index: number) => {
@@ -212,8 +261,132 @@ export default function StepPage() {
         setFormSteps(updated)
     }
 
+    const addBlock = (stepIndex: number, type: MessageType) => {
+        const newSteps = [...formSteps]
+        newSteps[stepIndex].blocks.push({ type })
+        setFormSteps(newSteps)
+    }
+
+    const removeBlock = (stepIndex: number, blockIndex: number) => {
+        const newSteps = [...formSteps]
+        if (newSteps[stepIndex].blocks.length === 1) return
+        newSteps[stepIndex].blocks = newSteps[stepIndex].blocks.filter((_, i) => i !== blockIndex)
+        setFormSteps(newSteps)
+    }
+
+    const updateBlock = (stepIndex: number, blockIndex: number, updates: Partial<MessageBlock>) => {
+        const newSteps = [...formSteps]
+        newSteps[stepIndex].blocks[blockIndex] = { ...newSteps[stepIndex].blocks[blockIndex], ...updates }
+        setFormSteps(newSteps)
+    }
+
+    const getImageDimensions = (url: string): Promise<{ width: number; height: number }> => {
+        return new Promise((resolve) => {
+            const img = new Image()
+            img.onload = () => resolve({ width: img.width, height: img.height })
+            img.onerror = () => resolve({ width: 0, height: 0 })
+            img.src = url
+        })
+    }
+
+    const handleFileUpload = async (stepIndex: number, blockIndex: number, file: File, type: 'image' | 'video') => {
+        if (!currentChannelId) return
+
+        setUploadingStepIndex(stepIndex)
+        setUploadingBlockIndex(blockIndex)
+        const supabase = createClient()
+
+        try {
+            const fileExt = file.name.split('.').pop()
+            const fileName = `${Date.now()}.${fileExt}`
+            const folder = type === 'image' ? 'images' : 'videos'
+            const filePath = `steps/${currentChannelId}/${folder}/${fileName}`
+
+            const { error: uploadError } = await supabase.storage
+                .from('line-assets')
+                .upload(filePath, file)
+
+            if (uploadError) throw uploadError
+
+            const { data: { publicUrl } } = supabase.storage
+                .from('line-assets')
+                .getPublicUrl(filePath)
+
+            if (type === 'image') {
+                const { width, height } = await getImageDimensions(publicUrl)
+                updateBlock(stepIndex, blockIndex, { imageUrl: publicUrl, width, height })
+            } else {
+                updateBlock(stepIndex, blockIndex, { videoUrl: publicUrl })
+            }
+        } catch (error) {
+            console.error('アップロードエラー:', error)
+            alert('アップロードに失敗しました')
+        }
+
+        setUploadingStepIndex(null)
+        setUploadingBlockIndex(null)
+    }
+
+    const handleCreateTag = async () => {
+        if (!newTagName.trim() || !currentChannelId) return
+
+        const supabase = createClient()
+        const { data, error } = await supabase.from('tags').insert({
+            channel_id: currentChannelId,
+            name: newTagName,
+            color: '#3B82F6',
+            priority: 0
+        }).select().single()
+
+        if (data) {
+            setTags([...tags, data])
+            setNewTagName('')
+            setIsCreatingTag(false)
+        } else {
+            console.error('タグ作成エラー:', error)
+            alert('タグの作成に失敗しました')
+        }
+    }
+
+    const buildContentFromBlocks = (blocks: MessageBlock[]) => {
+        return blocks.map(block => {
+            if (block.type === 'text') {
+                return { type: 'text', text: block.text || '' }
+            } else if (block.type === 'image') {
+                return {
+                    type: 'image',
+                    originalContentUrl: block.imageUrl,
+                    previewImageUrl: block.imageUrl,
+                    customActions: block.customActions ? {
+                        tagIds: block.customActions.tagIds?.length ? block.customActions.tagIds : undefined,
+                        scenarioId: block.customActions.scenarioId,
+                        replyText: block.customActions.replyText,
+                        redirectUrl: block.customActions.redirectUrl
+                    } : undefined,
+                    aspectRatio: block.width && block.height ? block.width / block.height : undefined,
+                }
+            } else if (block.type === 'video') {
+                return {
+                    type: 'video',
+                    originalContentUrl: block.videoUrl,
+                    previewImageUrl: block.previewUrl || block.videoUrl,
+                }
+            }
+            return null
+        }).filter(Boolean)
+    }
+
+    const isStepValid = (step: FormStep) => {
+        return step.blocks.every(b => {
+            if (b.type === 'text') return !!b.text?.trim()
+            if (b.type === 'image') return !!b.imageUrl
+            if (b.type === 'video') return !!b.videoUrl
+            return false
+        })
+    }
+
     const handleSave = async () => {
-        if (!formName.trim() || !currentChannelId || formSteps.some(s => !s.content.trim())) return
+        if (!formName.trim() || !currentChannelId || formSteps.some(s => !isStepValid(s))) return
 
         setSaving(true)
         const supabase = createClient()
@@ -241,7 +414,7 @@ export default function StepPage() {
                         delay_minutes: formSteps[i].delayDays * 1440,
                         send_hour: formSteps[i].sendHour,
                         send_minute: formSteps[i].sendMinute,
-                        content: [{ type: 'text', text: formSteps[i].content }],
+                        content: buildContentFromBlocks(formSteps[i].blocks),
                     })
                 }
             } else {
@@ -265,7 +438,7 @@ export default function StepPage() {
                             delay_minutes: formSteps[i].delayDays * 1440,
                             send_hour: formSteps[i].sendHour,
                             send_minute: formSteps[i].sendMinute,
-                            content: [{ type: 'text', text: formSteps[i].content }],
+                            content: buildContentFromBlocks(formSteps[i].blocks),
                         })
                     }
                 }
@@ -519,12 +692,157 @@ export default function StepPage() {
                                         )}
                                         <span className="text-sm text-slate-500">に配信</span>
                                     </div>
-                                    <textarea
-                                        value={step.content}
-                                        onChange={(e) => updateStep(index, 'content', e.target.value)}
-                                        placeholder="メッセージを入力..."
-                                        className="w-full h-24 px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800 resize-none"
-                                    />
+                                    <div className="space-y-4">
+                                        {step.blocks.map((block, blockIndex) => (
+                                            <div key={blockIndex} className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <span className="text-xs font-medium text-slate-500">
+                                                        {block.type === 'text' && 'テキスト'}
+                                                        {block.type === 'image' && '画像'}
+                                                        {block.type === 'video' && '動画'}
+                                                    </span>
+                                                    {step.blocks.length > 1 && (
+                                                        <button
+                                                            onClick={() => removeBlock(index, blockIndex)}
+                                                            className="text-slate-400 hover:text-red-500"
+                                                        >
+                                                            <X className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                </div>
+
+                                                {block.type === 'text' && (
+                                                    <textarea
+                                                        value={block.text || ''}
+                                                        onChange={(e) => updateBlock(index, blockIndex, { text: e.target.value })}
+                                                        placeholder="メッセージを入力..."
+                                                        className="w-full min-h-[100px] px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800 resize-none"
+                                                    />
+                                                )}
+
+                                                {block.type === 'image' && (
+                                                    <div className="space-y-3">
+                                                        <div className="relative aspect-video rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center bg-slate-50 dark:bg-slate-800/50 overflow-hidden">
+                                                            {block.imageUrl ? (
+                                                                <>
+                                                                    <img src={block.imageUrl} alt="プレビュー" className="w-full h-full object-contain" />
+                                                                    <div className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
+                                                                        <label className="cursor-pointer px-4 py-2 bg-white text-slate-900 rounded-lg text-sm font-medium hover:bg-slate-50">
+                                                                            変更する
+                                                                            <input
+                                                                                type="file"
+                                                                                accept="image/jpeg,image/png"
+                                                                                className="hidden"
+                                                                                onChange={(e) => {
+                                                                                    const file = e.target.files?.[0]
+                                                                                    if (file) handleFileUpload(index, blockIndex, file, 'image')
+                                                                                }}
+                                                                            />
+                                                                        </label>
+                                                                    </div>
+                                                                </>
+                                                            ) : (
+                                                                <label className="cursor-pointer flex flex-col items-center p-6 w-full h-full justify-center">
+                                                                    {uploadingStepIndex === index && uploadingBlockIndex === blockIndex ? (
+                                                                        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+                                                                    ) : (
+                                                                        <>
+                                                                            <ImageIcon className="w-8 h-8 text-slate-400 mb-2" />
+                                                                            <span className="text-sm font-medium text-blue-600">画像を選択</span>
+                                                                            <span className="text-xs text-slate-500 mt-1">JPEG/PNG, 10MB以下</span>
+                                                                        </>
+                                                                    )}
+                                                                    <input
+                                                                        type="file"
+                                                                        accept="image/jpeg,image/png"
+                                                                        className="hidden"
+                                                                        onChange={(e) => {
+                                                                            const file = e.target.files?.[0]
+                                                                            if (file) handleFileUpload(index, blockIndex, file, 'image')
+                                                                        }}
+                                                                    />
+                                                                </label>
+                                                            )}
+                                                        </div>
+                                                        {block.imageUrl && (
+                                                            <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                                <Label className="text-xs mb-2 block">タップ時のアクション (オプション)</Label>
+                                                                <div className="space-y-2">
+                                                                    <Input
+                                                                        placeholder="URL (http://...)"
+                                                                        value={block.customActions?.redirectUrl || ''}
+                                                                        onChange={(e) => updateBlock(index, blockIndex, {
+                                                                            customActions: { ...block.customActions, redirectUrl: e.target.value }
+                                                                        })}
+                                                                        className="text-sm h-8"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {block.type === 'video' && (
+                                                    <div className="relative aspect-video rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center bg-slate-50 dark:bg-slate-800/50 overflow-hidden">
+                                                        {block.videoUrl ? (
+                                                            <>
+                                                                <video src={block.videoUrl} className="w-full h-full object-contain" controls />
+                                                                <div className="absolute top-2 right-2">
+                                                                    <label className="cursor-pointer px-3 py-1 bg-white/90 text-slate-900 rounded shadow text-xs font-medium hover:bg-white">
+                                                                        変更
+                                                                        <input
+                                                                            type="file"
+                                                                            accept="video/mp4"
+                                                                            className="hidden"
+                                                                            onChange={(e) => {
+                                                                                const file = e.target.files?.[0]
+                                                                                if (file) handleFileUpload(index, blockIndex, file, 'video')
+                                                                            }}
+                                                                        />
+                                                                    </label>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <label className="cursor-pointer flex flex-col items-center p-6 w-full h-full justify-center">
+                                                                {uploadingStepIndex === index && uploadingBlockIndex === blockIndex ? (
+                                                                    <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+                                                                ) : (
+                                                                    <>
+                                                                        <Video className="w-8 h-8 text-slate-400 mb-2" />
+                                                                        <span className="text-sm font-medium text-blue-600">動画を選択</span>
+                                                                        <span className="text-xs text-slate-500 mt-1">MP4, 200MB以下</span>
+                                                                    </>
+                                                                )}
+                                                                <input
+                                                                    type="file"
+                                                                    accept="video/mp4"
+                                                                    className="hidden"
+                                                                    onChange={(e) => {
+                                                                        const file = e.target.files?.[0]
+                                                                        if (file) handleFileUpload(index, blockIndex, file, 'video')
+                                                                    }}
+                                                                />
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+
+                                        {step.blocks.length < 5 && (
+                                            <div className="flex gap-2 border-t border-slate-200 dark:border-slate-700 pt-3 mt-2">
+                                                <Button type="button" variant="outline" size="sm" onClick={() => addBlock(index, 'text')} className="flex-1">
+                                                    <Type className="w-4 h-4 mr-1" />テキスト
+                                                </Button>
+                                                <Button type="button" variant="outline" size="sm" onClick={() => addBlock(index, 'image')} className="flex-1">
+                                                    <ImageIcon className="w-4 h-4 mr-1" />画像
+                                                </Button>
+                                                <Button type="button" variant="outline" size="sm" onClick={() => addBlock(index, 'video')} className="flex-1">
+                                                    <Video className="w-4 h-4 mr-1" />動画
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             ))}
                         </div>
@@ -535,7 +853,7 @@ export default function StepPage() {
                             </Button>
                             <Button
                                 onClick={handleSave}
-                                disabled={saving || !formName.trim() || formSteps.some(s => !s.content.trim())}
+                                disabled={saving || !formName.trim() || formSteps.some(s => !isStepValid(s))}
                             >
                                 {saving && <Loader2 className="w-4 h-4 animate-spin" />}
                                 <Save className="w-4 h-4" />
@@ -635,7 +953,14 @@ export default function StepPage() {
                                                     {formatDelayMinutes(step.delay_minutes, step.send_hour, step.send_minute)}
                                                 </div>
                                                 <p className="text-sm line-clamp-2">
-                                                    {(step.content as any)?.[0]?.text || '（メッセージなし）'}
+                                                    {(() => {
+                                                        const raw = Array.isArray(step.content) ? step.content[0] : step.content
+                                                        if (!raw) return '（メッセージなし）'
+                                                        if (raw.type === 'text') return raw.text || 'テキストメッセージ'
+                                                        if (raw.type === 'image') return '📷 画像メッセージ'
+                                                        if (raw.type === 'video') return '🎬 動画メッセージ'
+                                                        return 'リッチメッセージ'
+                                                    })()}
                                                 </p>
                                             </div>
                                         </div>
@@ -695,7 +1020,16 @@ export default function StepPage() {
                                 >
                                     {manualStartScenario.step_messages.map((sm, i) => (
                                         <option key={sm.id} value={sm.step_order}>
-                                            ステップ {sm.step_order}: {formatDelayMinutes(sm.delay_minutes, sm.send_hour, sm.send_minute)} — {(sm.content as any)?.[0]?.text?.substring(0, 30) || ''}
+                                            ステップ {sm.step_order}: {formatDelayMinutes(sm.delay_minutes, sm.send_hour, sm.send_minute)} — {
+                                                (() => {
+                                                    const raw = Array.isArray(sm.content) ? sm.content[0] : sm.content;
+                                                    if (!raw) return '（メッセージなし）';
+                                                    if (raw.type === 'text') return (raw.text || '').substring(0, 30);
+                                                    if (raw.type === 'image') return '📷 画像';
+                                                    if (raw.type === 'video') return '🎬 動画';
+                                                    return 'リッチメッセージ';
+                                                })()
+                                            }
                                         </option>
                                     ))}
                                 </select>
