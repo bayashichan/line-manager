@@ -97,14 +97,17 @@ export async function POST(request: NextRequest) {
         )
 
         // 既存のアクティブな実行を取得（重複回避）
-        const { data: existingExecutions } = await adminSupabase
-            .from('step_executions')
-            .select('line_user_id')
-            .eq('scenario_id', scenarioId)
-            .eq('status', 'active')
-            .in('line_user_id', targetUserIds)
+        let existingUserIds = new Set<string>()
+        if (targetUserIds.length > 0) {
+            const { data: existingExecutions } = await adminSupabase
+                .from('step_executions')
+                .select('line_user_id')
+                .eq('scenario_id', scenarioId)
+                .eq('status', 'active')
+                .in('line_user_id', targetUserIds)
 
-        const existingUserIds = new Set(existingExecutions?.map(e => e.line_user_id) || [])
+            existingUserIds = new Set(existingExecutions?.map(e => e.line_user_id) || [])
+        }
 
         // 新規にステップ実行を作成（既存はスキップ）
         let createdCount = 0
