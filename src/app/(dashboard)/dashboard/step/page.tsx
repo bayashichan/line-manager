@@ -677,15 +677,9 @@ export default function StepPage() {
                                             className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800"
                                         >
                                             <option value={0}>即時</option>
-                                            <option value={1}>1日後</option>
-                                            <option value={2}>2日後</option>
-                                            <option value={3}>3日後</option>
-                                            <option value={5}>5日後</option>
-                                            <option value={7}>7日後</option>
-                                            <option value={10}>10日後</option>
-                                            <option value={14}>14日後</option>
-                                            <option value={21}>21日後</option>
-                                            <option value={30}>30日後</option>
+                                            {Array.from({ length: 30 }, (_, i) => i + 1).map(day => (
+                                                <option key={day} value={day}>{day}日後</option>
+                                            ))}
                                         </select>
                                         {step.delayDays > 0 && (
                                             <>
