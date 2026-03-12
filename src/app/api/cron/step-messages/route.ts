@@ -83,6 +83,51 @@ export async function GET(request: NextRequest) {
                 // メッセージ送信
                 try {
                     await lineClient.pushMessage(lineUser.line_user_id, currentStepMessage.content)
+
+                    // チャット履歴への保存処理を追加
+                    let textContent = 'ステップ配信メッセージ'
+                    let contentType = 'text'
+
+                    // contentが配列（複数メッセージ）の場合の簡易判定
+                    if (Array.isArray(currentStepMessage.content)) {
+                        const firstMsg = currentStepMessage.content[0]
+                        if (firstMsg.type === 'text') {
+                            textContent = firstMsg.text
+                            contentType = 'text'
+                        } else if (firstMsg.type === 'image') {
+                            textContent = '画像が送信されました'
+                            contentType = 'image'
+                        } else if (firstMsg.type === 'video') {
+                            textContent = '動画が送信されました'
+                            contentType = 'video'
+                        } else if (firstMsg.type === 'template' || firstMsg.type === 'flex') {
+                            textContent = firstMsg.altText || 'リッチメッセージが送信されました'
+                            contentType = firstMsg.type
+                        }
+                    } else if (currentStepMessage.content?.type === 'text') {
+                        textContent = currentStepMessage.content.text
+                        contentType = 'text'
+                    }
+
+                    // 1. chat_messages へのINSERT
+                    await supabase.from('chat_messages').insert({
+                        channel_id: channel.id,
+                        line_user_id: execution.line_user_id,
+                        sender: 'admin',
+                        content_type: contentType,
+                        content: Array.isArray(currentStepMessage.content) ? currentStepMessage.content[0] : currentStepMessage.content,
+                        read_at: null,
+                    })
+
+                    // 2. line_users の更新
+                    await supabase
+                        .from('line_users')
+                        .update({
+                            last_message_at: now,
+                            last_message_content: textContent,
+                        })
+                        .eq('id', execution.line_user_id)
+
                 } catch (sendError) {
                     console.error(`ステップメッセージ送信エラー (${execution.id}):`, sendError)
                 }
