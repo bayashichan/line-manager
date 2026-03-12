@@ -22,6 +22,8 @@ import {
     Pencil,
     Trash2,
     MessageCircle, // Added
+    Play,
+    Square,
 } from 'lucide-react'
 import Papa from 'papaparse'
 
@@ -36,6 +38,7 @@ export default function FriendsPage() {
     const [loading, setLoading] = useState(true)
     const [searchQuery, setSearchQuery] = useState('')
     const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null)
+    const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
     const [selectedFriend, setSelectedFriend] = useState<LineUserWithTags | null>(null)
     const [currentChannelId, setCurrentChannelId] = useState<string | null>(null)
     const [showImportModal, setShowImportModal] = useState(false)
@@ -119,6 +122,10 @@ export default function FriendsPage() {
             friend.line_user_tags.some(ut => ut.tag_id === selectedTagFilter)
 
         return matchesSearch && matchesTag
+    }).sort((a, b) => {
+        const dateA = new Date(a.followed_at || 0).getTime()
+        const dateB = new Date(b.followed_at || 0).getTime()
+        return sortOrder === 'desc' ? dateB - dateA : dateA - dateB
     })
 
     const handleExportCSV = () => {
@@ -182,6 +189,16 @@ export default function FriendsPage() {
                         className="pl-10"
                     />
                 </div>
+                <div className="flex items-center gap-2">
+                    <select
+                        value={sortOrder}
+                        onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
+                        className="h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400 dark:bg-slate-900 dark:border-slate-800"
+                    >
+                        <option value="desc">新しい順</option>
+                        <option value="asc">古い順</option>
+                    </select>
+                </div>
                 <div className="flex gap-2 flex-wrap">
                     <Button
                         variant={selectedTagFilter === null ? 'default' : 'outline'}
@@ -244,7 +261,8 @@ export default function FriendsPage() {
                                         </p>
                                     )}
                                     <p className="text-xs text-slate-400 mt-1">
-                                        {getRelativeTime(friend.followed_at)}に追加
+                                        {formatDateTime(friend.followed_at)}
+                                        <span className="ml-1">({getRelativeTime(friend.followed_at)}に追加)</span>
                                     </p>
                                 </div>
                                 <Button
@@ -608,6 +626,86 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
     // Local state for optimistic UI updates
     const [localTagIds, setLocalTagIds] = useState<string[]>(friend.line_user_tags.map(ut => ut.tag_id))
 
+    // ステップ配信用の状態
+    const [scenarios, setScenarios] = useState<any[]>([])
+    const [executions, setExecutions] = useState<any[]>([])
+    const [selectedScenarioId, setSelectedScenarioId] = useState('')
+    const [stepLoading, setStepLoading] = useState(false)
+
+    useEffect(() => {
+        fetchStepData()
+    }, [friend.id])
+
+    const fetchStepData = async () => {
+        const supabase = createClient()
+        const { data: scenariosData } = await supabase
+            .from('step_scenarios')
+            .select('*')
+            .eq('channel_id', friend.channel_id)
+            .eq('is_active', true)
+        if (scenariosData) setScenarios(scenariosData)
+
+        const { data: executionsData } = await supabase
+            .from('step_executions')
+            .select('*, step_scenarios(name)')
+            .eq('line_user_id', friend.id)
+            .eq('status', 'active')
+        if (executionsData) setExecutions(executionsData)
+    }
+
+    const handleStartStep = async () => {
+        if (!selectedScenarioId) return
+        if (!confirm('このユーザーに対してステップ配信を開始しますか？')) return
+
+        setStepLoading(true)
+        try {
+            const res = await fetch('/api/step-executions/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    scenarioId: selectedScenarioId,
+                    targetType: 'users',
+                    userIds: [friend.id],
+                    startStep: 1
+                })
+            })
+            if (!res.ok) {
+                const data = await res.json()
+                throw new Error(data.error || 'エラーが発生しました')
+            }
+            setSelectedScenarioId('')
+            await fetchStepData()
+            alert('ステップ配信を開始しました')
+        } catch (error: any) {
+            alert(error.message)
+        } finally {
+            setStepLoading(false)
+        }
+    }
+
+    const handleStopStep = async (executionId: string) => {
+        if (!confirm('このステップ配信を停止しますか？')) return
+
+        setStepLoading(true)
+        try {
+            const res = await fetch('/api/step-executions/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ executionId })
+            })
+            if (!res.ok) {
+                const data = await res.json()
+                throw new Error(data.error || 'エラーが発生しました')
+            }
+            await fetchStepData()
+            alert('ステップ配信を停止しました')
+        } catch (error: any) {
+            alert(error.message)
+        } finally {
+            setStepLoading(false)
+        }
+    }
+
 
     // Update local state when friend prop changes (e.g. after parent re-fetch)
     useEffect(() => {
@@ -792,6 +890,66 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
                                 タグがまだありません。タグ管理から作成してください。
                             </p>
                         )}
+                    </div>
+
+                    {/* ステップ配信管理 */}
+                    <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                        <label className="text-sm font-medium flex items-center gap-2">
+                            <Play className="w-4 h-4" />
+                            ステップ配信
+                        </label>
+
+                        <div className="space-y-3">
+                            {executions.length > 0 && (
+                                <div className="space-y-2">
+                                    <p className="text-xs text-slate-500 font-medium">実行中のシナリオ</p>
+                                    {executions.map(exec => (
+                                        <div key={exec.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-800">
+                                            <div className="min-w-0 pr-2">
+                                                <p className="text-sm font-medium truncate">{exec.step_scenarios?.name}</p>
+                                                <p className="text-xs text-slate-500">現在: ステップ{exec.current_step}</p>
+                                            </div>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => handleStopStep(exec.id)}
+                                                disabled={stepLoading}
+                                                className="shrink-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                            >
+                                                <Square className="w-3 h-3 mr-1" />
+                                                停止
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div className="space-y-2">
+                                <p className="text-xs text-slate-500 font-medium">新しく開始</p>
+                                <div className="flex gap-2">
+                                    <select
+                                        value={selectedScenarioId}
+                                        onChange={(e) => setSelectedScenarioId(e.target.value)}
+                                        className="flex-1 h-9 px-3 py-1 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400 dark:bg-slate-900 dark:border-slate-800"
+                                    >
+                                        <option value="">シナリオを選択...</option>
+                                        {scenarios.filter(s => !executions.some(e => e.scenario_id === s.id)).map(scenario => (
+                                            <option key={scenario.id} value={scenario.id}>
+                                                {scenario.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <Button
+                                        onClick={handleStartStep}
+                                        disabled={!selectedScenarioId || stepLoading}
+                                        className="shrink-0"
+                                    >
+                                        {stepLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 mr-1" />}
+                                        開始
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     {/* ステータスメッセージ */}
