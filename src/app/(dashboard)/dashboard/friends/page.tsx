@@ -42,6 +42,8 @@ export default function FriendsPage() {
     const [selectedFriend, setSelectedFriend] = useState<LineUserWithTags | null>(null)
     const [currentChannelId, setCurrentChannelId] = useState<string | null>(null)
     const [showImportModal, setShowImportModal] = useState(false)
+    const [showBatchStepModal, setShowBatchStepModal] = useState(false)
+    const [scenarios, setScenarios] = useState<any[]>([])
 
     useEffect(() => {
         fetchChannelAndData()
@@ -111,6 +113,28 @@ export default function FriendsPage() {
         if (tagsData) {
             setTags(tagsData)
         }
+
+        // シナリオ一覧取得（一括ステップ送信用）
+        const { data: scenariosData } = await supabase
+            .from('step_scenarios')
+            .select('*, step_messages(*)')
+            .eq('channel_id', channelId)
+            .eq('is_active', true)
+            .order('created_at', { ascending: false })
+
+        if (scenariosData) {
+            const sortedScenarios = scenariosData.map(s => ({
+                ...s,
+                step_messages: (s.step_messages || []).sort((a: any, b: any) => {
+                    if (a.delay_minutes !== b.delay_minutes) return a.delay_minutes - b.delay_minutes;
+                    const aHour = a.send_hour ?? 0;
+                    const bHour = b.send_hour ?? 0;
+                    if (aHour !== bHour) return aHour - bHour;
+                    return (a.send_minute ?? 0) - (b.send_minute ?? 0);
+                })
+            }))
+            setScenarios(sortedScenarios)
+        }
     }
 
     const filteredFriends = friends.filter(friend => {
@@ -174,6 +198,14 @@ export default function FriendsPage() {
                     <Button variant="outline" onClick={handleExportCSV}>
                         <Download className="w-4 h-4" />
                         CSVエクスポート
+                    </Button>
+                    <Button
+                        onClick={() => setShowBatchStepModal(true)}
+                        disabled={filteredFriends.length === 0}
+                        className="bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                        <MessageCircle className="w-4 h-4 mr-2" />
+                        表示中の{filteredFriends.length}人にステップ配信
                     </Button>
                 </div>
             </div>
@@ -323,6 +355,154 @@ export default function FriendsPage() {
                     }}
                 />
             )}
+
+            {/* 一括ステップ配信モーダル */}
+            {showBatchStepModal && (
+                <BatchStepModal
+                    targetUsers={filteredFriends}
+                    scenarios={scenarios}
+                    onClose={() => setShowBatchStepModal(false)}
+                    onSuccess={() => {
+                        setShowBatchStepModal(false)
+                        // fetch actions aren't strictly required since it doesn't change friends display directly,
+                        // but good for ensuring up-to-date execution status inside FriendDetailModal
+                        if (currentChannelId) fetchData(currentChannelId)
+                    }}
+                />
+            )}
+        </div>
+    )
+}
+
+interface BatchStepModalProps {
+    targetUsers: LineUserWithTags[]
+    scenarios: any[]
+    onClose: () => void
+    onSuccess: () => void
+}
+
+function BatchStepModal({ targetUsers, scenarios, onClose, onSuccess }: BatchStepModalProps) {
+    const [selectedScenarioId, setSelectedScenarioId] = useState('')
+    const [startStep, setStartStep] = useState(1)
+    const [loading, setLoading] = useState(false)
+    const [result, setResult] = useState<string | null>(null)
+
+    const selectedScenario = scenarios.find(s => s.id === selectedScenarioId)
+
+    const handleStart = async () => {
+        if (!selectedScenarioId) return
+
+        setLoading(true)
+        setResult(null)
+
+        try {
+            const userIds = targetUsers.map(u => u.id)
+            const res = await fetch('/api/step-executions/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    scenarioId: selectedScenarioId,
+                    startStep: startStep,
+                    targetType: 'users',
+                    userIds: userIds,
+                }),
+            })
+
+            const data = await res.json()
+
+            if (res.ok) {
+                setResult(data.message)
+                setTimeout(() => {
+                    onSuccess()
+                }, 2000)
+            } else {
+                setResult(`エラー: ${data.error}`)
+            }
+        } catch (error) {
+            setResult('エラーが発生しました')
+        }
+
+        setLoading(false)
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+            <Card className="relative w-full max-w-lg shadow-xl">
+                <CardHeader className="flex flex-row items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                        <MessageCircle className="w-5 h-5 text-blue-500" />
+                        一括ステップ配信
+                    </CardTitle>
+                    <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
+                        <X className="w-5 h-5" />
+                    </button>
+                </CardHeader>
+                <CardContent className="space-y-6 pt-6">
+                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-800 dark:text-blue-200">
+                        現在表示されている <strong>{targetUsers.length}人</strong> の友だちに対して、ステップ配信を開始します。
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">シナリオを選択</label>
+                            <select
+                                value={selectedScenarioId}
+                                onChange={(e) => {
+                                    setSelectedScenarioId(e.target.value)
+                                    setStartStep(1)
+                                }}
+                                className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
+                            >
+                                <option value="">選択してください</option>
+                                {scenarios.map(s => (
+                                    <option key={s.id} value={s.id}>{s.name} ({s.step_messages?.length || 0}ステップ)</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {selectedScenario && (
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">開始ステップ</label>
+                                <select
+                                    value={startStep}
+                                    onChange={(e) => setStartStep(parseInt(e.target.value))}
+                                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
+                                >
+                                    {selectedScenario.step_messages?.map((sm: any, i: number) => (
+                                        <option key={sm.id} value={i + 1}>
+                                            ステップ {i + 1}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                    </div>
+
+                    {result && (
+                        <div className={cn(
+                            "p-3 rounded-lg text-sm",
+                            result.startsWith('エラー')
+                                ? "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                                : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                        )}>
+                            {result}
+                        </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-2">
+                        <Button variant="outline" onClick={onClose}>キャンセル</Button>
+                        <Button
+                            onClick={handleStart}
+                            disabled={!selectedScenarioId || loading || targetUsers.length === 0}
+                            className="bg-blue-600 hover:bg-blue-700 text-white"
+                        >
+                            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                            配信開始
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     )
 }
