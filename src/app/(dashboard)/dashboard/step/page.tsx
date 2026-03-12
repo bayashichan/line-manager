@@ -152,7 +152,13 @@ export default function StepPage() {
         if (scenariosData) {
             const sorted = scenariosData.map(s => ({
                 ...s,
-                step_messages: (s.step_messages || []).sort((a: StepMessage, b: StepMessage) => a.step_order - b.step_order)
+                step_messages: (s.step_messages || []).sort((a: StepMessage, b: StepMessage) => {
+                    if (a.delay_minutes !== b.delay_minutes) return a.delay_minutes - b.delay_minutes;
+                    const aHour = a.send_hour ?? 0;
+                    const bHour = b.send_hour ?? 0;
+                    if (aHour !== bHour) return aHour - bHour;
+                    return (a.send_minute ?? 0) - (b.send_minute ?? 0);
+                })
             }))
             setScenarios(sorted as StepScenarioWithMessages[])
         }
@@ -1034,8 +1040,8 @@ export default function StepPage() {
                                     className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800"
                                 >
                                     {manualStartScenario.step_messages.map((sm, i) => (
-                                        <option key={sm.id} value={sm.step_order}>
-                                            ステップ {sm.step_order}: {formatDelayMinutes(sm.delay_minutes, sm.send_hour, sm.send_minute)} — {
+                                        <option key={sm.id} value={i + 1}>
+                                            ステップ {i + 1}: {formatDelayMinutes(sm.delay_minutes, sm.send_hour, sm.send_minute)} — {
                                                 (() => {
                                                     const raw = Array.isArray(sm.content) ? sm.content[0] : sm.content;
                                                     if (!raw) return '（メッセージなし）';

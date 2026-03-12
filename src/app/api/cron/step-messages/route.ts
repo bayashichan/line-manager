@@ -55,13 +55,19 @@ export async function GET(request: NextRequest) {
                 const lineUser = execution.line_users as any
                 const channel = scenario.channels as any
 
-                // 現在のステップのメッセージを取得
-                const stepMessages = (scenario.step_messages || []).sort(
-                    (a: any, b: any) => a.step_order - b.step_order
-                )
-                const currentStepMessage = stepMessages.find(
+                // 現在のステップのメッセージを時間の早い順にソートして取得
+                const stepMessages = (scenario.step_messages || []).sort((a: any, b: any) => {
+                    if (a.delay_minutes !== b.delay_minutes) return a.delay_minutes - b.delay_minutes;
+                    const aHour = a.send_hour ?? 0;
+                    const bHour = b.send_hour ?? 0;
+                    if (aHour !== bHour) return aHour - bHour;
+                    return (a.send_minute ?? 0) - (b.send_minute ?? 0);
+                });
+
+                const currentIndex = stepMessages.findIndex(
                     (sm: any) => sm.step_order === execution.current_step
-                )
+                );
+                const currentStepMessage = currentIndex >= 0 ? stepMessages[currentIndex] : null;
 
                 if (!currentStepMessage || !lineUser?.line_user_id) {
                     // ステップが見つからない場合は完了
@@ -199,15 +205,19 @@ export async function GET(request: NextRequest) {
                     console.error(`ステップメッセージ送信エラー (${execution.id}):`, sendError)
                 }
 
-                // 次のステップを確認
-                const nextStep = stepMessages.find(
-                    (sm: any) => sm.step_order === execution.current_step + 1
-                )
+                // 次のステップを確認（時間順で次のインデックス）
+                const nextStep = currentIndex >= 0 && currentIndex + 1 < stepMessages.length
+                    ? stepMessages[currentIndex + 1]
+                    : null
 
                 if (nextStep) {
-                    // 次のステップへ進む
+                    // 次のステップへ進む（配信日時はシナリオ開始日時を基準にする）
+                    let baseDate = new Date(execution.created_at)
+                    if (isNaN(baseDate.getTime())) {
+                        baseDate = new Date()
+                    }
                     const nextSendAt = calculateNextSendAt(
-                        new Date(),
+                        baseDate,
                         nextStep.delay_minutes,
                         nextStep.send_hour ?? null,
                         nextStep.send_minute ?? 0
@@ -216,7 +226,7 @@ export async function GET(request: NextRequest) {
                     await supabase
                         .from('step_executions')
                         .update({
-                            current_step: execution.current_step + 1,
+                            current_step: nextStep.step_order, // 実際の step_order を保存
                             next_send_at: nextSendAt,
                         })
                         .eq('id', execution.id)

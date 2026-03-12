@@ -48,13 +48,17 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'シナリオが見つかりません' }, { status: 404 })
         }
 
-        // ステップメッセージをソート
-        const stepMessages = (scenario.step_messages || []).sort(
-            (a: any, b: any) => a.step_order - b.step_order
-        )
+        // ステップメッセージを時間の早い順にソート
+        const stepMessages = (scenario.step_messages || []).sort((a: any, b: any) => {
+            if (a.delay_minutes !== b.delay_minutes) return a.delay_minutes - b.delay_minutes;
+            const aHour = a.send_hour ?? 0;
+            const bHour = b.send_hour ?? 0;
+            if (aHour !== bHour) return aHour - bHour;
+            return (a.send_minute ?? 0) - (b.send_minute ?? 0);
+        });
 
-        // 開始ステップのメッセージを取得
-        const startStepMessage = stepMessages.find((sm: any) => sm.step_order === startStep)
+        // 開始ステップのメッセージを取得（フロントからの startStep はソート後インデックス + 1）
+        const startStepMessage = stepMessages[startStep - 1]
         if (!startStepMessage) {
             return NextResponse.json({ error: `ステップ ${startStep} が見つかりません` }, { status: 400 })
         }
@@ -115,7 +119,7 @@ export async function POST(request: NextRequest) {
             await adminSupabase.from('step_executions').insert({
                 scenario_id: scenarioId,
                 line_user_id: userId,
-                current_step: startStep,
+                current_step: startStepMessage.step_order, // 実際の step_order を保存
                 next_send_at: nextSendAt,
                 status: 'active',
             })
