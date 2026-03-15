@@ -28,6 +28,7 @@ import {
     Settings,
 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
+import { useRouter } from 'next/navigation'
 
 type MessageType = 'text' | 'image' | 'video'
 
@@ -68,6 +69,7 @@ interface LineUser {
 }
 
 export default function StepPage() {
+    const router = useRouter()
     const [scenarios, setScenarios] = useState<StepScenarioWithMessages[]>([])
     const [tags, setTags] = useState<Tag[]>([])
     const [loading, setLoading] = useState(true)
@@ -589,10 +591,16 @@ export default function StepPage() {
                         {scenarios.length}個のシナリオ
                     </p>
                 </div>
-                <Button onClick={startCreating}>
-                    <Plus className="w-4 h-4" />
-                    シナリオ作成
-                </Button>
+                <div className="flex items-center gap-2">
+                    <Button variant="outline" onClick={() => router.push('/dashboard/step/executions')}>
+                        <Clock className="w-4 h-4" />
+                        配信状況を確認
+                    </Button>
+                    <Button onClick={startCreating}>
+                        <Plus className="w-4 h-4" />
+                        シナリオ作成
+                    </Button>
+                </div>
             </div>
 
             {/* 作成/編集フォーム */}
