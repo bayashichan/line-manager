@@ -60,12 +60,34 @@ export default function LiffPage() {
     return (
         <div style={{
             display: 'flex',
+            flexDirection: 'column',
             justifyContent: 'center',
             alignItems: 'center',
             height: '100vh',
             fontFamily: 'sans-serif',
+            backgroundColor: '#ffffff',
+            gap: '24px',
         }}>
-            <p style={{ color: '#06C755', fontSize: '16px' }}>LINEへ接続中...</p>
+            <style>{`
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+                .line-spinner {
+                    width: 52px;
+                    height: 52px;
+                    border: 5px solid #d4f5e2;
+                    border-top-color: #06C755;
+                    border-radius: 50%;
+                    animation: spin 0.85s linear infinite;
+                }
+            `}</style>
+            <div className="line-spinner" />
+            <p style={{ color: '#06C755', fontSize: '22px', fontWeight: 'bold', margin: 0 }}>
+                LINE接続中...
+            </p>
+            <p style={{ color: '#555555', fontSize: '15px', margin: 0, textAlign: 'center', lineHeight: '1.8' }}>
+                LINEに接続しています。<br />そのままお待ちください。<br />画面を閉じないでください。
+            </p>
         </div>
     )
 }
