@@ -133,7 +133,35 @@ async function processEvent(
 }
 
 /**
- * フォローイベント処理
+ * タイムアウト付きfetch（LINE APIのハング対策）
+ */
+async function fetchWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    fallback: T
+): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>
+    const timeout = new Promise<T>((resolve) => {
+        timer = setTimeout(() => {
+            console.warn(`タイムアウト (${timeoutMs}ms) - フォールバック値を使用`)
+            resolve(fallback)
+        }, timeoutMs)
+    })
+    try {
+        const result = await Promise.race([promise, timeout])
+        return result
+    } finally {
+        clearTimeout(timer!)
+    }
+}
+
+/**
+ * フォローイベント処理（最適化版）
+ * 
+ * 設計方針:
+ * - ユーザー保存（upsert）を最優先で確実に実行 → 友だち一覧に必ず表示
+ * - プロフィール取得は3秒タイムアウト → LINE API遅延時も処理続行
+ * - リッチメニュー/タグ付け/ステップ配信は非同期 → タイムアウト回避
  */
 async function handleFollow(
     supabase: ReturnType<typeof createAdminClient>,
@@ -142,100 +170,118 @@ async function handleFollow(
     userId: string
 ) {
     try {
-        // LINEからプロフィールを取得
-        let profile: { displayName: string; pictureUrl?: string; statusMessage?: string } = {
-            displayName: '不明なユーザー'
-        }
-        try {
-            profile = await lineClient.getProfile(userId)
-        } catch (profileError) {
-            console.warn(`プロフィール取得失敗 (userId: ${userId}):`, profileError)
-        }
+        // ====================================================================
+        // STEP 1: プロフィール取得（3秒タイムアウト付き）
+        // ====================================================================
+        const defaultProfile = { userId, displayName: '不明なユーザー', pictureUrl: undefined, statusMessage: undefined }
+        const profile = await fetchWithTimeout(
+            lineClient.getProfile(userId),
+            3000,
+            defaultProfile
+        )
 
-        // 既存ユーザーを確認
-        const { data: existingUser } = await supabase
+        // ====================================================================
+        // STEP 2: ユーザー保存（upsert - これが最重要。ここだけは絶対に成功させる）
+        // select + insert/update の2回を1回に統合し、処理時間を短縮
+        // ====================================================================
+        const { data: upsertedUser, error: upsertError } = await supabase
             .from('line_users')
-            .select('id, is_blocked')
-            .eq('channel_id', channel.id)
-            .eq('line_user_id', userId)
-            .single()
-
-        if (existingUser) {
-            // 既存ユーザーの場合、ブロック解除として更新
-            await supabase
-                .from('line_users')
-                .update({
-                    display_name: profile.displayName,
-                    picture_url: profile.pictureUrl,
-                    status_message: profile.statusMessage,
-                    is_blocked: false,
-                    followed_at: new Date().toISOString(),
-                })
-                .eq('id', existingUser.id)
-        } else {
-            // 新規ユーザーを作成
-            const { data: newUser, error } = await supabase
-                .from('line_users')
-                .insert({
+            .upsert(
+                {
                     channel_id: channel.id,
                     line_user_id: userId,
                     display_name: profile.displayName,
                     picture_url: profile.pictureUrl,
                     status_message: profile.statusMessage,
-                    current_rich_menu_id: channel.default_rich_menu_id,
-                })
-                .select('id')
-                .single()
-
-            if (error) {
-                console.error('ユーザー作成エラー:', error)
-                return
-            }
-
-            // デフォルトリッチメニューを適用
-            if (channel.default_rich_menu_id) {
-                const { data: richMenu } = await supabase
-                    .from('rich_menus')
-                    .select('rich_menu_id')
-                    .eq('id', channel.default_rich_menu_id)
-                    .single()
-
-                if (richMenu?.rich_menu_id) {
-                    await lineClient.linkRichMenuToUser(userId, richMenu.rich_menu_id)
+                    is_blocked: false,
+                    followed_at: new Date().toISOString(),
+                },
+                {
+                    onConflict: 'channel_id,line_user_id',
                 }
-            }
+            )
+            .select('id')
+            .single()
 
-            // 自動タグ付け処理
-            if (channel.auto_reply_tags && channel.auto_reply_tags.length > 0) {
-                const tagInserts = channel.auto_reply_tags.map(tagId => ({
-                    line_user_id: newUser.id,
-                    tag_id: tagId,
-                }))
-
-                const { error: tagError } = await supabase
-                    .from('line_user_tags')
-                    .insert(tagInserts)
-
-                if (tagError) {
-                    console.error('自動タグ付けエラー:', tagError)
-                } else {
-                    console.log(`自動タグ付け完了: ${tagInserts.length} 件`)
-
-                    // タグに応じたリッチメニュー切り替え判定
-                    // 新規ユーザーなのでデフォルトが適用済みだが、タグ優先度が高いものがあれば上書きする
-                    await supabase.rpc('determine_rich_menu_for_user', {
-                        p_line_user_id: newUser.id
-                    })
-                }
-            }
-
-            // フォロートリガーのステップ配信を開始
-            await startFollowStepScenarios(supabase, channel.id, newUser.id)
+        if (upsertError || !upsertedUser) {
+            // ここが失敗 = 友だちが一覧に表示されない。絶対にログを残す
+            console.error(`【致命的】ユーザー保存失敗 (userId: ${userId}, channel: ${channel.id}):`, upsertError)
+            return
         }
 
-        console.log(`友だち追加: ${profile.displayName} (${userId})`)
+        console.log(`友だち追加/更新: ${profile.displayName} (${userId}) → DB ID: ${upsertedUser.id}`)
+
+        // ====================================================================
+        // STEP 3: 副次処理を非同期で実行（Fire and Forget）
+        // ユーザー保存は完了済みなので、以下が失敗しても友だち一覧には表示される
+        // ====================================================================
+        runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
+            .catch(err => console.error(`副次処理エラー (userId: ${userId}):`, err))
+
     } catch (error) {
-        console.error('フォロー処理エラー:', error)
+        console.error(`フォロー処理エラー (userId: ${userId}):`, error)
+    }
+}
+
+/**
+ * 副次処理（リッチメニュー適用、タグ付け、ステップ配信）
+ * handleFollowから非同期で呼ばれる。失敗しても友だち登録自体は完了済み。
+ */
+async function runSecondaryTasks(
+    supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
+    channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
+    lineUserId: string,
+    internalUserId: string
+) {
+    // デフォルトリッチメニューを適用
+    if (channel.default_rich_menu_id) {
+        try {
+            const { data: richMenu } = await supabase
+                .from('rich_menus')
+                .select('rich_menu_id')
+                .eq('id', channel.default_rich_menu_id)
+                .single()
+
+            if (richMenu?.rich_menu_id) {
+                await lineClient.linkRichMenuToUser(lineUserId, richMenu.rich_menu_id)
+            }
+        } catch (err) {
+            console.error(`リッチメニュー適用エラー (userId: ${lineUserId}):`, err)
+        }
+    }
+
+    // 自動タグ付け処理
+    if (channel.auto_reply_tags && channel.auto_reply_tags.length > 0) {
+        try {
+            const tagInserts = channel.auto_reply_tags.map(tagId => ({
+                line_user_id: internalUserId,
+                tag_id: tagId,
+            }))
+
+            const { error: tagError } = await supabase
+                .from('line_user_tags')
+                .insert(tagInserts)
+
+            if (tagError) {
+                console.error(`自動タグ付けエラー (userId: ${lineUserId}):`, tagError)
+            } else {
+                console.log(`自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
+
+                await supabase.rpc('determine_rich_menu_for_user', {
+                    p_line_user_id: internalUserId
+                })
+            }
+        } catch (err) {
+            console.error(`タグ処理エラー (userId: ${lineUserId}):`, err)
+        }
+    }
+
+    // フォロートリガーのステップ配信を開始
+    try {
+        await startFollowStepScenarios(supabase, channel.id, internalUserId)
+    } catch (err) {
+        console.error(`ステップ配信開始エラー (userId: ${lineUserId}):`, err)
     }
 }
 
