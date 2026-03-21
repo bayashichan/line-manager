@@ -212,10 +212,10 @@ async function handleFollow(
         console.log(`友だち追加/更新: ${profile.displayName} (${userId}) → DB ID: ${upsertedUser.id}`)
 
         // ====================================================================
-        // STEP 3: 副次処理を非同期で実行（Fire and Forget）
+        // STEP 3: 副次処理を実行（確実に完了させるためawait）
         // ユーザー保存は完了済みなので、以下が失敗しても友だち一覧には表示される
         // ====================================================================
-        runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
+        await runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
             .catch(err => console.error(`副次処理エラー (userId: ${userId}):`, err))
 
     } catch (error) {
@@ -284,13 +284,15 @@ async function runSecondaryTasks(
         console.error(`ステップ配信開始エラー (userId: ${lineUserId}):`, err)
     }
 
-    // Meta CAPI送信
+    // Meta CAPI送信（awaitで確実に完了させる）
     try {
         await sendMetaCapiEvent(supabase, channel.id, lineUserId)
     } catch (err) {
         console.error(`Meta CAPI送信エラー (userId: ${lineUserId}):`, err)
     }
 }
+
+
 
 /**
  * Meta Conversions API へ Lead イベントを送信
