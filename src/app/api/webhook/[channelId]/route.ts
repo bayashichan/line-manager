@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Client } from '@upstash/qstash'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateSignature, LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
@@ -241,6 +242,51 @@ async function runSecondaryTasks(
         console.error(`Meta CAPI送信エラー (userId: ${lineUserId}):`, err)
     }
 
+    // リッチメニュー・タグ付け・ステップ配信をQStash経由で非同期実行
+    // Vercelの10秒タイムアウトを回避し、確実に完了させる
+    const qstashToken = process.env.QSTASH_TOKEN
+    if (qstashToken) {
+        try {
+            const qstashClient = new Client({ token: qstashToken })
+            const baseUrl = process.env.NEXT_PUBLIC_VERCEL_URL
+                ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
+                : process.env.VERCEL_URL
+                    ? `https://${process.env.VERCEL_URL}`
+                    : 'https://line-manager-omega.vercel.app'
+
+            await qstashClient.publishJSON({
+                url: `${baseUrl}/api/webhook/qstash-secondary`,
+                body: {
+                    channelId: channel.id,
+                    lineUserId,
+                    internalUserId,
+                },
+                retries: 3,
+            })
+            console.log(`QStash副次処理キュー送信完了 (userId: ${lineUserId})`)
+        } catch (err) {
+            console.error(`QStash送信失敗、直接実行にフォールバック (userId: ${lineUserId}):`, err)
+            // QStash失敗時は直接実行（ベストエフォート）
+            await executeSecondaryTasksDirectly(supabase, lineClient, channel, lineUserId, internalUserId)
+        }
+    } else {
+        // QStash未設定時は直接実行
+        await executeSecondaryTasksDirectly(supabase, lineClient, channel, lineUserId, internalUserId)
+    }
+}
+
+
+
+/**
+ * 副次処理を直接実行（QStash未設定時・失敗時のフォールバック）
+ */
+async function executeSecondaryTasksDirectly(
+    supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
+    channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
+    lineUserId: string,
+    internalUserId: string
+) {
     // デフォルトリッチメニューを適用
     if (channel.default_rich_menu_id) {
         try {
@@ -291,8 +337,6 @@ async function runSecondaryTasks(
         console.error(`ステップ配信開始エラー (userId: ${lineUserId}):`, err)
     }
 }
-
-
 
 /**
  * Meta Conversions API へ Lead イベントを送信
