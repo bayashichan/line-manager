@@ -234,6 +234,13 @@ async function runSecondaryTasks(
     lineUserId: string,
     internalUserId: string
 ) {
+    // Meta CAPI送信（最優先 - タイムアウト前に確実に完了させる）
+    try {
+        await sendMetaCapiEvent(supabase, channel.id, lineUserId)
+    } catch (err) {
+        console.error(`Meta CAPI送信エラー (userId: ${lineUserId}):`, err)
+    }
+
     // デフォルトリッチメニューを適用
     if (channel.default_rich_menu_id) {
         try {
@@ -282,13 +289,6 @@ async function runSecondaryTasks(
         await startFollowStepScenarios(supabase, channel.id, internalUserId)
     } catch (err) {
         console.error(`ステップ配信開始エラー (userId: ${lineUserId}):`, err)
-    }
-
-    // Meta CAPI送信（awaitで確実に完了させる）
-    try {
-        await sendMetaCapiEvent(supabase, channel.id, lineUserId)
-    } catch (err) {
-        console.error(`Meta CAPI送信エラー (userId: ${lineUserId}):`, err)
     }
 }
 
