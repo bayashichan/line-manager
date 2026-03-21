@@ -356,15 +356,7 @@ async function sendMetaCapiEvent(
         }
     )
 
-    if (!res.ok) {
-        const errText = await res.text()
-        console.error(`Meta CAPI APIエラー (userId: ${lineUserId}):`, errText)
-        return
-    }
-
-    console.log(`Meta CAPI送信成功 (userId: ${lineUserId}, fbclid: ${conversion.fbclid ?? 'なし'})`)
-
-    // ad_conversionsのstatusをconvertedに更新
+    // statusを先に更新（Webhook到達確認のため）
     await supabase
         .from('ad_conversions')
         .update({
@@ -372,6 +364,14 @@ async function sendMetaCapiEvent(
             converted_at: new Date().toISOString(),
         })
         .eq('id', conversion.id)
+
+    if (!res.ok) {
+        const errText = await res.text()
+        console.error(`Meta CAPI APIエラー (userId: ${lineUserId}):`, errText)
+        return
+    }
+
+    console.log(`Meta CAPI送信成功 (userId: ${lineUserId}, fbclid: ${conversion.fbclid ?? 'なし'})`)
 }
 
 /**
