@@ -8,17 +8,17 @@ export default function LiffPage() {
     useEffect(() => {
         const ua = navigator.userAgent || ''
         const isInstagramFacebook = /Instagram|FBAN|FBAV/i.test(ua)
-        const isAndroid = /Android/i.test(ua)
+        const isIOS = /iPhone|iPad|iPod/i.test(ua)
+        const hasLiffState = new URLSearchParams(window.location.search).has('liff.state')
 
-        if (isInstagramFacebook) {
-            if (isAndroid) {
-                // Android: App Linksが使えるので直接liff.line.meにリダイレクト（余分なステップなし）
-                const liffId = process.env.NEXT_PUBLIC_LIFF_ID || ''
-                const queryString = window.location.search
-                window.location.href = `https://liff.line.me/${liffId}${queryString}`
+        // liff.stateがある = LIFFサーバーからのリダイレクト済み → 通常フローで処理（ループ防止）
+        if (!hasLiffState && isInstagramFacebook) {
+            if (isIOS) {
+                // iOS: ユニバーサルリンクがIABで使えないのでクッションページ経由で開くボタンを表示
+                setIsInAppBrowser(true)
                 return
             }
-            // iOS: ユニバーサルリンクが使えないのでクッションページ経由で開くボタンを表示
+            // Android: App LinksはJS遷移では発火しないのでボタンを表示（明示的タップで発火）
             setIsInAppBrowser(true)
             return
         }
@@ -72,11 +72,13 @@ export default function LiffPage() {
 
     // Instagram/Facebook内ブラウザ用のUI
     if (isInAppBrowser) {
-        const params = typeof window !== 'undefined'
-            ? new URLSearchParams(window.location.search)
-            : new URLSearchParams()
         const liffId = process.env.NEXT_PUBLIC_LIFF_ID || ''
         const queryString = typeof window !== 'undefined' ? window.location.search : ''
+        const isIOS = typeof window !== 'undefined' && /iPhone|iPad|iPod/i.test(navigator.userAgent)
+        // iOS: クッションページ経由でLINEアプリ確実起動 / Android: App Linksで直接起動
+        const lineOpenUrl = isIOS
+            ? `https://line.me/R/app/${liffId}${queryString}`
+            : `https://liff.line.me/${liffId}${queryString}`
 
         return (
             <div style={{
@@ -110,7 +112,7 @@ export default function LiffPage() {
                     友だち追加するために<br />LINEアプリに移動します
                 </p>
                 <a
-                    href={`https://line.me/R/app/${liffId}${queryString}`}
+                    href={lineOpenUrl}
                     style={{
                         display: 'block',
                         width: '100%',
