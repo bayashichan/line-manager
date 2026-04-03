@@ -8,17 +8,9 @@ export default function LiffPage() {
     useEffect(() => {
         const ua = navigator.userAgent || ''
         const isInstagramFacebook = /Instagram|FBAN|FBAV/i.test(ua)
-        const isIOS = /iPhone|iPad|iPod/i.test(ua)
-        const hasLiffState = new URLSearchParams(window.location.search).has('liff.state')
 
-        // liff.stateがある = LIFFサーバーからのリダイレクト済み → 通常フローで処理（ループ防止）
-        if (!hasLiffState && isInstagramFacebook) {
-            if (isIOS) {
-                // iOS: ユニバーサルリンクがIABで使えないのでクッションページ経由で開くボタンを表示
-                setIsInAppBrowser(true)
-                return
-            }
-            // Android: App LinksはJS遷移では発火しないのでボタンを表示（明示的タップで発火）
+        if (isInstagramFacebook) {
+            // Android/iOS問わずIABではボタン表示（LIFF initはIABで動作しない）
             setIsInAppBrowser(true)
             return
         }
@@ -73,12 +65,43 @@ export default function LiffPage() {
     // Instagram/Facebook内ブラウザ用のUI
     if (isInAppBrowser) {
         const liffId = process.env.NEXT_PUBLIC_LIFF_ID || ''
-        const queryString = typeof window !== 'undefined' ? window.location.search : ''
         const isIOS = typeof window !== 'undefined' && /iPhone|iPad|iPod/i.test(navigator.userAgent)
-        // iOS: クッションページ経由でLINEアプリ確実起動 / Android: App Linksで直接起動
+
+        // liff.stateがある場合は元のパラメータをデコードして取り出す
+        const getCleanParams = (): string => {
+            if (typeof window === 'undefined') return ''
+            const urlParams = new URLSearchParams(window.location.search)
+            const liffState = urlParams.get('liff.state')
+            if (liffState) {
+                try {
+                    const decoded = decodeURIComponent(liffState).replace(/^\?/, '')
+                    const decodedParams = new URLSearchParams(decoded)
+                    const clean = new URLSearchParams()
+                    for (const key of ['fbclid', 'tag', 'ch', 'oa']) {
+                        const val = decodedParams.get(key)
+                        if (val) clean.set(key, val)
+                    }
+                    return clean.toString()
+                } catch {
+                    return ''
+                }
+            }
+            const clean = new URLSearchParams()
+            for (const key of ['fbclid', 'tag', 'ch', 'oa']) {
+                const val = urlParams.get(key)
+                if (val) clean.set(key, val)
+            }
+            return clean.toString()
+        }
+
+        const cleanParams = getCleanParams()
+        const paramSuffix = cleanParams ? `?${cleanParams}` : ''
+
         const lineOpenUrl = isIOS
-            ? `https://line.me/R/app/${liffId}${queryString}`
-            : `https://liff.line.me/${liffId}${queryString}`
+            // iOS: クッションページ経由でLINEアプリ確実起動（WKWebViewはユニバーサルリンク非対応）
+            ? `https://line.me/R/app/${liffId}${paramSuffix}`
+            // Android: intent://でLINEアプリを直接起動（IABのApp Link制限を完全回避）
+            : `intent://app/${liffId}${paramSuffix}#Intent;scheme=line;package=jp.naver.line.android;end`
 
         return (
             <div style={{
