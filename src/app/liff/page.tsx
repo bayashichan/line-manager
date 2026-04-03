@@ -36,7 +36,7 @@ export default function LiffPage() {
             const lineUserId = profile.userId
 
             if (ch && lineUserId) {
-                fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/ad_conversions`, {
+                await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/ad_conversions`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -103,7 +103,7 @@ export default function LiffPage() {
                     友だち追加するために<br />LINEアプリに移動します
                 </p>
                 <a
-                    href={`line://app/${liffId}${queryString}`}
+                    href={`https://line.me/R/app/${liffId}${queryString}`}
                     style={{
                         display: 'block',
                         width: '100%',
