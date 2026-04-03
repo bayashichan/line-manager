@@ -7,11 +7,18 @@ export default function LiffPage() {
 
     useEffect(() => {
         const ua = navigator.userAgent || ''
-        // Instagram / Facebook / Twitter 等のアプリ内ブラウザを検出
-        const inApp = /Instagram|FBAN|FBAV|Twitter|Line\//i.test(ua) && !ua.includes('Line/')
+        const isInstagramFacebook = /Instagram|FBAN|FBAV/i.test(ua)
+        const isAndroid = /Android/i.test(ua)
 
-        if (/Instagram|FBAN|FBAV/i.test(ua)) {
-            // Instagram/Facebook内ブラウザ → LINEアプリで開くボタンを表示
+        if (isInstagramFacebook) {
+            if (isAndroid) {
+                // Android: App Linksが使えるので直接liff.line.meにリダイレクト（余分なステップなし）
+                const liffId = process.env.NEXT_PUBLIC_LIFF_ID || ''
+                const queryString = window.location.search
+                window.location.href = `https://liff.line.me/${liffId}${queryString}`
+                return
+            }
+            // iOS: ユニバーサルリンクが使えないのでクッションページ経由で開くボタンを表示
             setIsInAppBrowser(true)
             return
         }
