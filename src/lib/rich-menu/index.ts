@@ -88,7 +88,7 @@ export async function recalculateAndSwitchUserRichMenu(
 
 /**
  * ユーザーに適用すべきリッチメニューを判定
- * 優先順位: 表示期間内メニュー > タグ連動メニュー > デフォルトメニュー
+ * 優先順位: タグ連動メニュー > 表示期間内メニュー > デフォルトメニュー
  */
 async function determineRichMenuForUser(
     supabase: ReturnType<typeof createAdminClient>,
@@ -105,7 +105,33 @@ async function determineRichMenuForUser(
 
     const now = new Date().toISOString()
 
-    // 1. 表示期間内のリッチメニューを優先チェック
+    // 1. ユーザーの全タグを取得（タグ連動メニュー）を最優先チェック
+    const { data: userTags, error } = await supabase
+        .from('line_user_tags')
+        .select(`
+      tags (
+        id,
+        linked_rich_menu_id,
+        priority
+      )
+    `)
+        .eq('line_user_id', lineUserId)
+
+    if (!error) {
+        // JSで安全にソート
+        const sortedTags = (userTags || [])
+            .map(ut => ut.tags as unknown as Tag)
+            .filter(t => t && t.linked_rich_menu_id)
+            .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+
+        if (sortedTags.length > 0) {
+            return sortedTags[0].linked_rich_menu_id
+        }
+    } else {
+        console.error('ユーザータグ取得エラー:', error)
+    }
+
+    // 2. 表示期間内のリッチメニューを次にチェック
     const { data: periodMenus } = await supabase
         .from('rich_menus')
         .select('id')
@@ -120,33 +146,6 @@ async function determineRichMenuForUser(
 
     if (periodMenus && periodMenus.length > 0) {
         return periodMenus[0].id
-    }
-
-    // 2. ユーザーの全タグを取得（タグ連動メニュー）
-    const { data: userTags, error } = await supabase
-        .from('line_user_tags')
-        .select(`
-      tags (
-        id,
-        linked_rich_menu_id,
-        priority
-      )
-    `)
-        .eq('line_user_id', lineUserId)
-
-    if (error) {
-        console.error('ユーザータグ取得エラー:', error)
-        return null
-    }
-
-    // JSで安全にソート（Supabaseのforeign_tableのソートエラー回避）
-    const sortedTags = (userTags || [])
-        .map(ut => ut.tags as unknown as Tag)
-        .filter(t => t && t.linked_rich_menu_id)
-        .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-
-    if (sortedTags.length > 0) {
-        return sortedTags[0].linked_rich_menu_id
     }
 
     // 3. なければデフォルトリッチメニューを返す
