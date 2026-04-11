@@ -314,16 +314,16 @@ async function executeSecondaryTasksDirectly(
 
             const { error: tagError } = await supabase
                 .from('line_user_tags')
-                .insert(tagInserts)
+                .upsert(tagInserts, { onConflict: 'line_user_id,tag_id' })
 
             if (tagError) {
-                console.error(`自動タグ付けエラー (userId: ${lineUserId}):`, tagError)
+                console.error(`タグ処理エラー (userId: ${lineUserId}):`, tagError)
             } else {
                 console.log(`自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
-
-                const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
-                await recalculateAndSwitchUserRichMenu(internalUserId)
             }
+
+            const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
+            await recalculateAndSwitchUserRichMenu(internalUserId)
         } catch (err) {
             console.error(`タグ処理エラー (userId: ${lineUserId}):`, err)
         }

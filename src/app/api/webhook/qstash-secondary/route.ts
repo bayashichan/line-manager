@@ -62,16 +62,16 @@ async function handler(request: Request) {
 
                 const { error: tagError } = await supabase
                     .from('line_user_tags')
-                    .insert(tagInserts)
+                    .upsert(tagInserts, { onConflict: 'line_user_id,tag_id' })
 
                 if (tagError) {
                     console.error(`QStash: 自動タグ付けエラー (userId: ${lineUserId}):`, tagError)
                 } else {
                     console.log(`QStash: 自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
-
-                    const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
-                    await recalculateAndSwitchUserRichMenu(internalUserId)
                 }
+
+                const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
+                await recalculateAndSwitchUserRichMenu(internalUserId)
             } catch (err) {
                 console.error(`QStash: タグ処理エラー (userId: ${lineUserId}):`, err)
             }
