@@ -44,25 +44,22 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'タグが見つかりません' }, { status: 404 })
         }
 
-        // タグを付与
+        // タグを付与（既についている場合もupsertで正常処理)
         const { error: assignError } = await supabase
             .from('line_user_tags')
-            .insert({
-                line_user_id: lineUserId,
-                tag_id: tagId,
-            })
+            .upsert(
+                {
+                    line_user_id: lineUserId,
+                    tag_id: tagId,
+                },
+                { onConflict: 'line_user_id,tag_id' }
+            )
 
         if (assignError) {
-            if (assignError.code === '23505') {
-                return NextResponse.json(
-                    { error: 'このタグは既に付与されています' },
-                    { status: 409 }
-                )
-            }
             throw assignError
         }
 
-        // リッチメニュー切り替え処理を実行
+        // リッチメニュー切り替え処理を実行（タグ付与済みの場合も必ず実行）
         await processRichMenuSwitchOnTagAssign(lineUserId, tagId)
 
         return NextResponse.json({ success: true })
