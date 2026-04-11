@@ -54,6 +54,15 @@ export async function processRichMenuSwitchOnTagAssign(
 export async function processRichMenuSwitchOnTagRemove(
     lineUserId: string
 ): Promise<void> {
+    await recalculateAndSwitchUserRichMenu(lineUserId)
+}
+
+/**
+ * ユーザーのリッチメニューを再計算して切り替え
+ */
+export async function recalculateAndSwitchUserRichMenu(
+    lineUserId: string
+): Promise<void> {
     const supabase = createAdminClient()
 
     // ユーザー情報を取得
@@ -113,7 +122,7 @@ async function determineRichMenuForUser(
         return periodMenus[0].id
     }
 
-    // 2. ユーザーの全タグを優先度順で取得（タグ連動メニュー）
+    // 2. ユーザーの全タグを取得（タグ連動メニュー）
     const { data: userTags, error } = await supabase
         .from('line_user_tags')
         .select(`
@@ -124,19 +133,20 @@ async function determineRichMenuForUser(
       )
     `)
         .eq('line_user_id', lineUserId)
-        .order('tags(priority)', { ascending: false })
 
     if (error) {
         console.error('ユーザータグ取得エラー:', error)
         return null
     }
 
-    // 優先度順にリッチメニュー連動タグを探す
-    for (const userTag of userTags || []) {
-        const tag = userTag.tags as unknown as Tag
-        if (tag?.linked_rich_menu_id) {
-            return tag.linked_rich_menu_id
-        }
+    // JSで安全にソート（Supabaseのforeign_tableのソートエラー回避）
+    const sortedTags = (userTags || [])
+        .map(ut => ut.tags as unknown as Tag)
+        .filter(t => t && t.linked_rich_menu_id)
+        .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+
+    if (sortedTags.length > 0) {
+        return sortedTags[0].linked_rich_menu_id
     }
 
     // 3. なければデフォルトリッチメニューを返す

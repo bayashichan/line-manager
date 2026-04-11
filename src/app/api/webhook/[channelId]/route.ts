@@ -321,9 +321,8 @@ async function executeSecondaryTasksDirectly(
             } else {
                 console.log(`自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
 
-                await supabase.rpc('determine_rich_menu_for_user', {
-                    p_line_user_id: internalUserId
-                })
+                const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
+                await recalculateAndSwitchUserRichMenu(internalUserId)
             }
         } catch (err) {
             console.error(`タグ処理エラー (userId: ${lineUserId}):`, err)
