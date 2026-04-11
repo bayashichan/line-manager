@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent, Textarea } from '@/components/ui'
 import { cn, getCookie } from '@/lib/utils'
 import type { RichMenu, RichMenuArea } from '@/types'
 import {
@@ -851,12 +851,22 @@ export default function RichMenusPage() {
                                             <option value="message">メッセージ送信</option>
                                             <option value="uri">URLを開く</option>
                                         </select>
-                                        <Input
-                                            value={area.action.type === 'uri' ? area.action.uri || '' : area.action.text || ''}
-                                            onChange={(e) => updateArea(index, 'actionValue', e.target.value)}
-                                            placeholder={area.action.type === 'uri' ? 'https://...' : 'ユーザーが送信するメッセージ'}
-                                            className="flex-1 h-9 text-sm"
-                                        />
+                                        {area.action.type === 'message' ? (
+                                            <Textarea
+                                                value={area.action.text || ''}
+                                                onChange={(e) => updateArea(index, 'actionValue', e.target.value)}
+                                                placeholder="ユーザーが送信するメッセージ（改行も可能です）"
+                                                className="flex-1 min-h-[36px] text-sm resize-y"
+                                                rows={2}
+                                            />
+                                        ) : (
+                                            <Input
+                                                value={area.action.uri || ''}
+                                                onChange={(e) => updateArea(index, 'actionValue', e.target.value)}
+                                                placeholder="https://..."
+                                                className="flex-1 h-9 text-sm"
+                                            />
+                                        )}
                                     </div>
 
                                     {/* 座標詳細（アコーディオン的に隠してもいいが、一応表示） */}
