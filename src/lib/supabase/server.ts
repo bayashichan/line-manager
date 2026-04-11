@@ -32,12 +32,20 @@ export function createAdminClient() {
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.SUPABASE_SERVICE_ROLE_KEY!,
         {
+            auth: {
+                persistSession: false,
+            },
             cookies: {
                 getAll() {
                     return []
                 },
                 setAll() { },
             },
+            global: {
+                fetch: (url, options) => {
+                    return fetch(url, { ...options, cache: 'no-store' })
+                }
+            }
         }
     )
 }
