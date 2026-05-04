@@ -19,6 +19,7 @@ export default function LiffPage() {
         const run = async () => {
             const params = new URLSearchParams(window.location.search)
             const fbclid = params.get('fbclid')
+            const fbp = params.get('fbp')
             const tag = params.get('tag')
             const ch = params.get('ch')
             const oa = params.get('oa')
@@ -35,21 +36,20 @@ export default function LiffPage() {
             const lineUserId = profile.userId
 
             if (ch && lineUserId) {
-                await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/ad_conversions`, {
+                // /api/track 経由で保存することでサーバー側がクライアントIPを取得できる
+                await fetch('/api/track', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-                        'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!}`,
-                        'Prefer': 'return=minimal',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         channel_id: ch,
                         line_user_id: lineUserId,
                         fbclid: fbclid || null,
+                        fbp: fbp || null,
                         tag: tag || null,
+                        user_agent: navigator.userAgent,
+                        event_source_url: window.location.href,
                     }),
-                }).catch(err => console.error('Supabase保存エラー:', err))
+                }).catch(err => console.error('トラッキング保存エラー:', err))
             }
 
             if (oa) {
@@ -77,7 +77,7 @@ export default function LiffPage() {
                     const decoded = decodeURIComponent(liffState).replace(/^\?/, '')
                     const decodedParams = new URLSearchParams(decoded)
                     const clean = new URLSearchParams()
-                    for (const key of ['fbclid', 'tag', 'ch', 'oa']) {
+                    for (const key of ['fbclid', 'fbp', 'tag', 'ch', 'oa']) {
                         const val = decodedParams.get(key)
                         if (val) clean.set(key, val)
                     }
@@ -87,7 +87,7 @@ export default function LiffPage() {
                 }
             }
             const clean = new URLSearchParams()
-            for (const key of ['fbclid', 'tag', 'ch', 'oa']) {
+            for (const key of ['fbclid', 'fbp', 'tag', 'ch', 'oa']) {
                 const val = urlParams.get(key)
                 if (val) clean.set(key, val)
             }
