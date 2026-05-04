@@ -47,7 +47,7 @@ export default function LiffPage() {
                         fbp: fbp || null,
                         tag: tag || null,
                         user_agent: navigator.userAgent,
-                        event_source_url: window.location.href,
+                        event_source_url: 'https://updatehayashi.jp/',
                     }),
                 }).catch(err => console.error('トラッキング保存エラー:', err))
             }
