@@ -53,8 +53,9 @@ export default function LiffPage() {
             }
 
             if (oa) {
-                // window.location.href では LIFF webview 内で Web ページとして開かれ友だち追加ボタンが動作しないため、LINE IAB で開く liff.openWindow を使う
-                liff.openWindow({ url: `https://line.me/R/ti/p/${oa}`, external: false })
+                // line:// スキームは LIFF webview 内で LINE のネイティブ URL ハンドラーが直接処理し、
+                // https://line.me/R/... と異なり Web ページを経由せずに友だち追加ダイアログを起動する
+                window.location.href = `line://ti/p/${oa}`
             } else {
                 liff.closeWindow()
             }
