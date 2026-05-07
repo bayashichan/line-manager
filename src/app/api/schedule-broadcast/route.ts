@@ -48,6 +48,9 @@ export async function POST(request: NextRequest) {
             body: { messageId },
             notBefore: Math.floor(scheduledTime / 1000), // UNIXタイムスタンプ(秒)
             retries: 3, // 失敗時のリトライ回数
+            headers: {
+                authorization: `Bearer ${process.env.CRON_SECRET ?? ''}`,
+            },
         })
 
         if (!res.messageId) {
