@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
@@ -123,4 +122,7 @@ async function handler(request: Request) {
     }
 }
 
-export const POST = verifySignatureAppRouter(handler)
+export async function POST(request: Request) {
+    const { verifySignatureAppRouter } = await import('@upstash/qstash/nextjs')
+    return verifySignatureAppRouter(handler)(request)
+}
