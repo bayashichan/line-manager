@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 export default function LiffPage() {
     const [isInAppBrowser, setIsInAppBrowser] = useState(false)
     const [friendAddOa, setFriendAddOa] = useState<string | null>(null)
+    const liffRef = useRef<any>(null)
 
     useEffect(() => {
         const ua = navigator.userAgent || ''
@@ -32,6 +33,7 @@ export default function LiffPage() {
 
             const liff = (await import('@line/liff')).default
             await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! })
+            liffRef.current = liff
 
             if (!liff.isLoggedIn()) {
                 liff.login({ redirectUri: window.location.href })
@@ -172,9 +174,15 @@ export default function LiffPage() {
 
     // LIFF 処理完了後の友だち追加ボタン表示
     if (friendAddOa) {
-        // line:// ネイティブスキームでネイティブダイアログを起動。
-        // @ プレフィックスを一度だけ付与する。
         const lineOaId = friendAddOa.startsWith('@') ? friendAddOa : `@${friendAddOa}`
+        const handleFriendAdd = () => {
+            if (liffRef.current) {
+                liffRef.current.openWindow({
+                    url: `https://line.me/R/ti/p/${lineOaId}`,
+                    external: false,
+                })
+            }
+        }
         return (
             <div style={{
                 display: 'flex',
@@ -206,8 +214,8 @@ export default function LiffPage() {
                 <p style={{ color: '#666', fontSize: '14px', margin: 0, textAlign: 'center', lineHeight: '1.7' }}>
                     下のボタンをタップして<br />友だち追加を完了してください
                 </p>
-                <a
-                    href={`line://ti/p/${lineOaId}`}
+                <button
+                    onClick={handleFriendAdd}
                     style={{
                         display: 'block',
                         width: '100%',
@@ -216,15 +224,16 @@ export default function LiffPage() {
                         backgroundColor: '#06C755',
                         color: '#fff',
                         textAlign: 'center',
-                        textDecoration: 'none',
+                        border: 'none',
                         fontWeight: 'bold',
                         fontSize: '17px',
                         borderRadius: '8px',
                         marginTop: '8px',
+                        cursor: 'pointer',
                     }}
                 >
                     友だち追加
-                </a>
+                </button>
             </div>
         )
     }
