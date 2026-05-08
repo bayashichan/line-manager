@@ -60,10 +60,9 @@ export default function LiffPage() {
 
             if (oa) {
                 // 自動遷移ではなくユーザー自身がタップする方式に変更。
-                // window.location.href の programmatic navigation は LIFF コンテキスト
-                // で「友だち追加」ボタンが無反応になる症状を引き起こす。
-                // 明示的な <a href> によるユーザー起動の遷移にすると LINE が
-                // ネイティブ友だち追加 UI を正しく処理する。
+                // line:// ネイティブスキームをユーザー起動の <a href> で開くことで、
+                // WKWebView が LINE アプリの URL ハンドラに渡しネイティブの
+                // 友だち追加ダイアログを直接起動する。
                 setFriendAddOa(oa)
             } else {
                 liff.closeWindow()
@@ -173,6 +172,9 @@ export default function LiffPage() {
 
     // LIFF 処理完了後の友だち追加ボタン表示
     if (friendAddOa) {
+        // line:// ネイティブスキームでネイティブダイアログを起動。
+        // @ プレフィックスを一度だけ付与する。
+        const lineOaId = friendAddOa.startsWith('@') ? friendAddOa : `@${friendAddOa}`
         return (
             <div style={{
                 display: 'flex',
@@ -205,7 +207,7 @@ export default function LiffPage() {
                     下のボタンをタップして<br />友だち追加を完了してください
                 </p>
                 <a
-                    href={`https://line.me/R/ti/p/${friendAddOa}`}
+                    href={`line://ti/p/${lineOaId}`}
                     style={{
                         display: 'block',
                         width: '100%',
