@@ -53,12 +53,12 @@ export default function LiffPage() {
             }
 
             if (oa) {
-                // LIFF webview 内から直接 window.location.href で遷移すると LINE が
-                // ユーザー認証コンテキストを保持したまま友だち追加 UI を起動するため、
-                // ブロック中ユーザーには「ブロック解除」ボタンが正しく表示される。
-                // liff.openWindow({ external: true }) で Safari 経由の Universal Link
-                // にすると認証コンテキストが失われ「友だち追加」ボタンが無反応になる。
-                window.location.href = `https://line.me/R/ti/p/${oa}`
+                // line:// スキームは LIFF webview 内の LINE ネイティブ URL ハンドラが
+                // 認証コンテキストを保持したまま直接処理するため、ブロック中ユーザーには
+                // 「ブロック解除」ボタンが正しく表示される。
+                // https://line.me/R/... を使うと Web ページ経由となり、Universal Link 解決の
+                // 過程で認証コンテキストが失われ「友だち追加」ボタンが無反応になる。
+                window.location.href = `line://ti/p/${oa}`
             } else {
                 liff.closeWindow()
             }
