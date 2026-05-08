@@ -177,7 +177,7 @@ export default function LiffPage() {
 
             if (!liffRef.current) {
                 setDebugInfo('2. LIFF未初期化 → 直接遷移')
-                window.location.href = `https://line.me/R/ti/p/${lineOaId}`
+                window.location.href = `line://ti/p/${lineOaId}`
                 return
             }
 
@@ -195,9 +195,9 @@ export default function LiffPage() {
                 }
             }
 
-            setDebugInfo(`5. 直接遷移: https://line.me/R/ti/p/${lineOaId}`)
+            setDebugInfo(`5. line://スキームで遷移: ${lineOaId}`)
             setTimeout(() => {
-                window.location.href = `https://line.me/R/ti/p/${lineOaId}`
+                window.location.href = `line://ti/p/${lineOaId}`
             }, 1500)
         }
         return (
