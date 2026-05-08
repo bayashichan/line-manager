@@ -199,9 +199,9 @@ export default function LiffPage() {
                 }
             }
 
-            setDebugInfo(`5. 直接遷移: https://line.me/R/ti/p/${lineOaId}`)
+            setDebugInfo(`5. line://スキームで遷移: ${lineOaId}`)
             setTimeout(() => {
-                window.location.href = `https://line.me/R/ti/p/${lineOaId}`
+                window.location.href = `line://ti/p/${lineOaId}`
             }, 1500)
         }
         return (
