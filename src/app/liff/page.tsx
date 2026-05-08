@@ -53,10 +53,12 @@ export default function LiffPage() {
             }
 
             if (oa) {
-                // external: true で外部ブラウザ（Safari/Chrome）経由の Universal Link として開く。
-                // LIFF/LINE IAB 内からの直接遷移は「非信頼ソース」として LINE のセキュリティ警告が発動し
-                // 友だち追加ボタンが無効化されるため、外部ブラウザ → Universal Link のパスを使う。
-                liff.openWindow({ url: `https://line.me/R/ti/p/${oa}`, external: true })
+                // LIFF webview 内から直接 window.location.href で遷移すると LINE が
+                // ユーザー認証コンテキストを保持したまま友だち追加 UI を起動するため、
+                // ブロック中ユーザーには「ブロック解除」ボタンが正しく表示される。
+                // liff.openWindow({ external: true }) で Safari 経由の Universal Link
+                // にすると認証コンテキストが失われ「友だち追加」ボタンが無反応になる。
+                window.location.href = `https://line.me/R/ti/p/${oa}`
             } else {
                 liff.closeWindow()
             }
