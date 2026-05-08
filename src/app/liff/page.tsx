@@ -5,6 +5,7 @@ import { useEffect, useState, useRef } from 'react'
 export default function LiffPage() {
     const [isInAppBrowser, setIsInAppBrowser] = useState(false)
     const [friendAddOa, setFriendAddOa] = useState<string | null>(null)
+    const [debugInfo, setDebugInfo] = useState<string>('')
     const liffRef = useRef<any>(null)
 
     useEffect(() => {
@@ -172,16 +173,32 @@ export default function LiffPage() {
     if (friendAddOa) {
         const lineOaId = friendAddOa.startsWith('@') ? friendAddOa : `@${friendAddOa}`
         const handleFriendAdd = async () => {
-            if (!liffRef.current) return
-            try {
-                await liffRef.current.addFriend()
-            } catch {
-                // addFriend() が設定されていない場合は外部ブラウザ経由でフォールバック
-                liffRef.current.openWindow({
-                    url: `https://line.me/R/ti/p/${lineOaId}`,
-                    external: true,
-                })
+            setDebugInfo('1. クリック検知')
+
+            if (!liffRef.current) {
+                setDebugInfo('2. LIFF未初期化 → 直接遷移')
+                window.location.href = `https://line.me/R/ti/p/${lineOaId}`
+                return
             }
+
+            const hasAddFriend = typeof liffRef.current.addFriend === 'function'
+            setDebugInfo(`2. addFriend存在: ${hasAddFriend}`)
+
+            if (hasAddFriend) {
+                try {
+                    setDebugInfo('3. liff.addFriend()呼び出し中...')
+                    await liffRef.current.addFriend()
+                    setDebugInfo('4. liff.addFriend()成功')
+                    return
+                } catch (e: any) {
+                    setDebugInfo(`4. addFriendエラー: ${e?.message || JSON.stringify(e).slice(0, 100)}`)
+                }
+            }
+
+            setDebugInfo(`5. 直接遷移: https://line.me/R/ti/p/${lineOaId}`)
+            setTimeout(() => {
+                window.location.href = `https://line.me/R/ti/p/${lineOaId}`
+            }, 1500)
         }
         return (
             <div style={{
@@ -214,6 +231,11 @@ export default function LiffPage() {
                 <p style={{ color: '#666', fontSize: '14px', margin: 0, textAlign: 'center', lineHeight: '1.7' }}>
                     下のボタンをタップして<br />友だち追加を完了してください
                 </p>
+                {debugInfo && (
+                    <p style={{ color: '#d97706', fontSize: '12px', margin: 0, textAlign: 'center', padding: '8px', backgroundColor: '#fef3c7', borderRadius: '4px', maxWidth: '300px', wordBreak: 'break-all' }}>
+                        DEBUG: {debugInfo}
+                    </p>
+                )}
                 <button
                     onClick={handleFriendAdd}
                     style={{
