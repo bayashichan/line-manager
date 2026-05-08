@@ -17,7 +17,12 @@ export default function LiffPage() {
 
         // 通常フロー: LIFF初期化
         const run = async () => {
-            const params = new URLSearchParams(window.location.search)
+            // LINE が params を liff.state に包む場合があるため両方から展開する
+            const urlParams = new URLSearchParams(window.location.search)
+            const liffState = urlParams.get('liff.state')
+            const params = liffState
+                ? new URLSearchParams(decodeURIComponent(liffState).replace(/^\?/, ''))
+                : urlParams
             const fbclid = params.get('fbclid')
             const fbp = params.get('fbp')
             const tag = params.get('tag')
