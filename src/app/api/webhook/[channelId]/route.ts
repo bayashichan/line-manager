@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { validateSignature, LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
 import type { Channel } from '@/types'
+import { createHash } from 'crypto'
 
 interface WebhookEvent {
     type: string
@@ -355,7 +356,7 @@ async function sendMetaCapiEvent(
     // ad_conversionsテーブルからpendingレコードを検索
     const { data: conversion } = await supabase
         .from('ad_conversions')
-        .select('id, fbclid')
+        .select('id, fbclid, fbp, user_agent, client_ip, event_source_url')
         .eq('channel_id', channelId)
         .eq('line_user_id', lineUserId)
         .eq('status', 'pending')
@@ -373,15 +374,23 @@ async function sendMetaCapiEvent(
         ? `fb.1.${Date.now()}.${conversion.fbclid}`
         : undefined
 
+    const hashedExternalId = createHash('sha256').update(lineUserId).digest('hex')
+
     // Meta CAPI へ Lead イベントを送信
     const payload: Record<string, unknown> = {
         data: [
             {
                 event_name: 'Lead',
                 event_time: eventTime,
+                event_id: conversion.id, // イベントの重複排除に使用
                 action_source: 'website',
+                event_source_url: conversion.event_source_url || undefined,
                 user_data: {
                     ...(fbcValue ? { fbc: fbcValue } : {}),
+                    ...(conversion.fbp ? { fbp: conversion.fbp } : {}),
+                    ...(conversion.client_ip ? { client_ip_address: conversion.client_ip } : {}),
+                    external_id: hashedExternalId,
+                    client_user_agent: conversion.user_agent || undefined,
                 },
             },
         ],

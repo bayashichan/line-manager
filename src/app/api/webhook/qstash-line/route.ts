@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { chunk } from '@/lib/utils'
@@ -8,6 +7,14 @@ import { chunk } from '@/lib/utils'
  * QStashからのWebhook受信エンドポイント (予約配信の実行)
  * POST /api/webhook/qstash-line
  */
+export async function POST(request: NextRequest) {
+    const authHeader = request.headers.get('authorization')
+    if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return NextResponse.json({ error: '認証エラー' }, { status: 401 })
+    }
+    return handler(request)
+}
+
 async function handler(request: NextRequest) {
     try {
         const body = await request.json()
@@ -215,5 +222,3 @@ async function completeMessage(adminClient: any, messageId: string, total: numbe
         .eq('id', messageId)
 }
 
-// Upstash QStash の署名検証ミドルウェアでラップ
-export const POST = verifySignatureAppRouter(handler)
