@@ -175,11 +175,15 @@ export default function LiffPage() {
     // LIFF 処理完了後の友だち追加ボタン表示
     if (friendAddOa) {
         const lineOaId = friendAddOa.startsWith('@') ? friendAddOa : `@${friendAddOa}`
-        const handleFriendAdd = () => {
-            if (liffRef.current) {
+        const handleFriendAdd = async () => {
+            if (!liffRef.current) return
+            try {
+                await liffRef.current.addFriend()
+            } catch {
+                // addFriend() が設定されていない場合は外部ブラウザ経由でフォールバック
                 liffRef.current.openWindow({
                     url: `https://line.me/R/ti/p/${lineOaId}`,
-                    external: false,
+                    external: true,
                 })
             }
         }
