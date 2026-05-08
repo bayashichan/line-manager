@@ -53,9 +53,10 @@ export default function LiffPage() {
             }
 
             if (oa) {
-                // line:// スキームは LIFF webview 内で LINE のネイティブ URL ハンドラーが直接処理し、
-                // https://line.me/R/... と異なり Web ページを経由せずに友だち追加ダイアログを起動する
-                window.location.href = `line://ti/p/${oa}`
+                // external: true で外部ブラウザ（Safari/Chrome）経由の Universal Link として開く。
+                // LIFF/LINE IAB 内からの直接遷移は「非信頼ソース」として LINE のセキュリティ警告が発動し
+                // 友だち追加ボタンが無効化されるため、外部ブラウザ → Universal Link のパスを使う。
+                liff.openWindow({ url: `https://line.me/R/ti/p/${oa}`, external: true })
             } else {
                 liff.closeWindow()
             }
