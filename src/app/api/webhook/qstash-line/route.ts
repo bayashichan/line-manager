@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { chunk } from '@/lib/utils'
@@ -215,5 +214,7 @@ async function completeMessage(adminClient: any, messageId: string, total: numbe
         .eq('id', messageId)
 }
 
-// Upstash QStash の署名検証ミドルウェアでラップ
-export const POST = verifySignatureAppRouter(handler)
+export async function POST(request: NextRequest) {
+    const { verifySignatureAppRouter } = await import('@upstash/qstash/nextjs')
+    return verifySignatureAppRouter(handler)(request)
+}
