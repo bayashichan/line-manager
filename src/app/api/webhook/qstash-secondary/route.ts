@@ -1,5 +1,4 @@
-import { NextResponse } from 'next/server'
-import { verifySignatureAppRouter } from '@upstash/qstash/nextjs'
+import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
@@ -10,6 +9,14 @@ import { calculateNextSendAt } from '@/lib/utils'
  *
  * リッチメニュー適用・タグ付け・ステップ配信を確実に実行する
  */
+export async function POST(request: NextRequest) {
+    const authHeader = request.headers.get('authorization')
+    if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return NextResponse.json({ error: '認証エラー' }, { status: 401 })
+    }
+    return handler(request)
+}
+
 async function handler(request: Request) {
     try {
         const { channelId, lineUserId, internalUserId } = await request.json()
@@ -123,4 +130,3 @@ async function handler(request: Request) {
     }
 }
 
-export const POST = verifySignatureAppRouter(handler)
