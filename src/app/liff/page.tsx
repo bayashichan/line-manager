@@ -85,8 +85,7 @@ export default function LiffPage() {
                     `redirect_uri=${encodeURIComponent(redirectUri)}&` +
                     `state=${encodeURIComponent(state)}&` +
                     `scope=${encodeURIComponent('profile openid')}&` +
-                    `bot_prompt=aggressive&` +
-                    `prompt=consent`
+                    `bot_prompt=aggressive`
 
                 setAuthorizeUrl(url)
                 // 自動遷移
