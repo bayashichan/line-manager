@@ -25,16 +25,31 @@ export async function POST(request: NextRequest) {
             : request.headers.get('x-real-ip') ?? null
 
         const supabase = createAdminClient()
-        const { error } = await supabase.from('ad_conversions').insert({
-            channel_id,
-            line_user_id,
+
+        // 既存の pending レコードがある場合は新規 INSERT せず UPDATE
+        // 同一ユーザーが LIFF を複数回踏んでも pending が増殖しないようにする
+        const { data: existing } = await supabase
+            .from('ad_conversions')
+            .select('id')
+            .eq('channel_id', channel_id)
+            .eq('line_user_id', line_user_id)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+        const payload = {
             fbclid: fbclid ?? null,
             fbp: fbp ?? null,
             tag: tag ?? null,
             user_agent: user_agent ?? null,
             event_source_url: event_source_url ?? null,
             client_ip: clientIp,
-        })
+        }
+
+        const { error } = existing
+            ? await supabase.from('ad_conversions').update(payload).eq('id', existing.id)
+            : await supabase.from('ad_conversions').insert({ channel_id, line_user_id, ...payload })
 
         if (error) {
             console.error('ad_conversions 保存エラー:', error)

@@ -370,8 +370,13 @@ async function sendMetaCapiEvent(
     }
 
     const eventTime = Math.floor(Date.now() / 1000)
-    const fbcValue = conversion.fbclid
-        ? `fb.1.${Date.now()}.${conversion.fbclid}`
+    // fbc は LP のクリック時刻ベースで構築する必要がある (Date.now() だと EMQ が下がる)。
+    // _fbp クッキーが `fb.1.<click_timestamp_ms>.<value>` 形式で同じクリック時刻を持つため、
+    // そこからタイムスタンプを抽出して fbc を構築する。
+    const fbpTimestampStr = conversion.fbp?.split('.')[2]
+    const fbpTimestamp = fbpTimestampStr ? parseInt(fbpTimestampStr, 10) : NaN
+    const fbcValue = conversion.fbclid && !isNaN(fbpTimestamp)
+        ? `fb.1.${fbpTimestamp}.${conversion.fbclid}`
         : undefined
 
     const hashedExternalId = createHash('sha256').update(lineUserId).digest('hex')
