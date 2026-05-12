@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { sendMetaCapiEvent } from '@/lib/meta-capi'
 
 /**
  * 広告コンバージョントラッキング
@@ -54,6 +55,25 @@ export async function POST(request: NextRequest) {
         if (error) {
             console.error('ad_conversions 保存エラー:', error)
             return NextResponse.json({ error: '保存に失敗しました' }, { status: 500 })
+        }
+
+        // レースコンディション対応: LINEのWebhookがLIFF /api/track より先に到達した場合、
+        // Webhookはpendingレコードを見つけられずにCAPIをスキップする。
+        // そのためtracking保存後にline_usersのfollowed_atを確認し、
+        // Webhookが先に処理済みであれば今すぐCAPIを送信する。
+        if (line_user_id && channel_id) {
+            const { data: lineUser } = await supabase
+                .from('line_users')
+                .select('followed_at')
+                .eq('channel_id', channel_id)
+                .eq('line_user_id', line_user_id)
+                .not('followed_at', 'is', null)
+                .maybeSingle()
+
+            if (lineUser) {
+                await sendMetaCapiEvent(supabase, channel_id, line_user_id)
+                    .catch(err => console.error('CAPI送信エラー (race condition fix):', err))
+            }
         }
 
         return NextResponse.json({ success: true })
