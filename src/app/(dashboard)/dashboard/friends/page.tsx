@@ -21,9 +21,11 @@ import {
     AlertCircle,
     Pencil,
     Trash2,
-    MessageCircle, // Added
+    MessageCircle,
     Play,
     Square,
+    CheckSquare,
+    Users,
 } from 'lucide-react'
 import Papa from 'papaparse'
 
@@ -45,6 +47,11 @@ export default function FriendsPage() {
     const [showBatchStepModal, setShowBatchStepModal] = useState(false)
     const [scenarios, setScenarios] = useState<any[]>([])
 
+    // 複数選択モード
+    const [isSelectionMode, setIsSelectionMode] = useState(false)
+    const [selectedFriendIds, setSelectedFriendIds] = useState<Set<string>>(new Set())
+    const [showBatchTagModal, setShowBatchTagModal] = useState(false)
+
     useEffect(() => {
         fetchChannelAndData()
     }, [])
@@ -55,16 +62,13 @@ export default function FriendsPage() {
 
         if (!user) return
 
-        // CookieからチャンネルIDを取得
         const savedChannelId = getCookie('line-manager-channel-id')
 
-        // チャンネル取得
         let query = supabase
             .from('channel_members')
             .select('channel_id')
             .eq('profile_id', user.id)
 
-        // Cookieがある場合はそのチャンネルを検索
         if (savedChannelId) {
             query = query.eq('channel_id', savedChannelId)
         } else {
@@ -85,7 +89,6 @@ export default function FriendsPage() {
     const fetchData = async (channelId: string) => {
         const supabase = createClient()
 
-        // 友だち一覧取得
         const { data: friendsData } = await supabase
             .from('line_users')
             .select(`
@@ -103,7 +106,6 @@ export default function FriendsPage() {
             setFriends(friendsData as LineUserWithTags[])
         }
 
-        // タグ一覧取得
         const { data: tagsData } = await supabase
             .from('tags')
             .select('*')
@@ -114,7 +116,6 @@ export default function FriendsPage() {
             setTags(tagsData)
         }
 
-        // シナリオ一覧取得（一括ステップ送信用）
         const { data: scenariosData } = await supabase
             .from('step_scenarios')
             .select('*, step_messages(*)')
@@ -142,8 +143,14 @@ export default function FriendsPage() {
             (friend.display_name?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
             (friend.internal_name?.toLowerCase() || '').includes(searchQuery.toLowerCase())
 
-        const matchesTag = !selectedTagFilter ||
-            friend.line_user_tags.some(ut => ut.tag_id === selectedTagFilter)
+        let matchesTag: boolean
+        if (!selectedTagFilter) {
+            matchesTag = true
+        } else if (selectedTagFilter === 'no-tag') {
+            matchesTag = friend.line_user_tags.length === 0
+        } else {
+            matchesTag = friend.line_user_tags.some(ut => ut.tag_id === selectedTagFilter)
+        }
 
         return matchesSearch && matchesTag
     }).sort((a, b) => {
@@ -162,13 +169,40 @@ export default function FriendsPage() {
         ])
 
         const csv = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
-        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
         a.download = `friends_${new Date().toISOString().split('T')[0]}.csv`
         a.click()
     }
+
+    const toggleSelectionMode = () => {
+        setIsSelectionMode(prev => !prev)
+        setSelectedFriendIds(new Set())
+    }
+
+    const toggleFriendSelection = (friendId: string) => {
+        setSelectedFriendIds(prev => {
+            const next = new Set(prev)
+            if (next.has(friendId)) {
+                next.delete(friendId)
+            } else {
+                next.add(friendId)
+            }
+            return next
+        })
+    }
+
+    const selectAllFiltered = () => {
+        setSelectedFriendIds(new Set(filteredFriends.map(f => f.id)))
+    }
+
+    const clearSelection = () => {
+        setSelectedFriendIds(new Set())
+    }
+
+    const selectedFriends = filteredFriends.filter(f => selectedFriendIds.has(f.id))
 
     if (loading) {
         return (
@@ -188,25 +222,61 @@ export default function FriendsPage() {
                     </h1>
                     <p className="text-slate-500 dark:text-slate-400 mt-1">
                         {filteredFriends.length} / {friends.length} 人の友だち
+                        {isSelectionMode && selectedFriendIds.size > 0 && (
+                            <span className="ml-2 text-emerald-600 dark:text-emerald-400 font-medium">
+                                （{selectedFriendIds.size}人選択中）
+                            </span>
+                        )}
                     </p>
                 </div>
-                <div className="flex gap-2">
-                    <Button variant="outline" onClick={() => setShowImportModal(true)}>
-                        <Upload className="w-4 h-4" />
-                        CSVインポート
-                    </Button>
-                    <Button variant="outline" onClick={handleExportCSV}>
-                        <Download className="w-4 h-4" />
-                        CSVエクスポート
-                    </Button>
-                    <Button
-                        onClick={() => setShowBatchStepModal(true)}
-                        disabled={filteredFriends.length === 0}
-                        className="bg-blue-600 hover:bg-blue-700 text-white"
-                    >
-                        <MessageCircle className="w-4 h-4 mr-2" />
-                        表示中の{filteredFriends.length}人にステップ配信
-                    </Button>
+                <div className="flex flex-wrap gap-2">
+                    {isSelectionMode ? (
+                        <>
+                            <Button variant="outline" size="sm" onClick={selectAllFiltered}>
+                                <CheckSquare className="w-4 h-4 mr-1" />
+                                全選択
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={clearSelection}>
+                                <Square className="w-4 h-4 mr-1" />
+                                全解除
+                            </Button>
+                            <Button
+                                onClick={() => setShowBatchTagModal(true)}
+                                disabled={selectedFriendIds.size === 0}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                            >
+                                <TagIcon className="w-4 h-4 mr-2" />
+                                {selectedFriendIds.size}人にタグ付与
+                            </Button>
+                            <Button variant="outline" onClick={toggleSelectionMode}>
+                                <X className="w-4 h-4 mr-1" />
+                                選択解除
+                            </Button>
+                        </>
+                    ) : (
+                        <>
+                            <Button variant="outline" onClick={toggleSelectionMode}>
+                                <Users className="w-4 h-4 mr-1" />
+                                複数選択
+                            </Button>
+                            <Button variant="outline" onClick={() => setShowImportModal(true)}>
+                                <Upload className="w-4 h-4" />
+                                CSVインポート
+                            </Button>
+                            <Button variant="outline" onClick={handleExportCSV}>
+                                <Download className="w-4 h-4" />
+                                CSVエクスポート
+                            </Button>
+                            <Button
+                                onClick={() => setShowBatchStepModal(true)}
+                                disabled={filteredFriends.length === 0}
+                                className="bg-blue-600 hover:bg-blue-700 text-white"
+                            >
+                                <MessageCircle className="w-4 h-4 mr-2" />
+                                表示中の{filteredFriends.length}人にステップ配信
+                            </Button>
+                        </>
+                    )}
                 </div>
             </div>
 
@@ -239,6 +309,14 @@ export default function FriendsPage() {
                     >
                         全て
                     </Button>
+                    <Button
+                        variant={selectedTagFilter === 'no-tag' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setSelectedTagFilter('no-tag')}
+                        className={selectedTagFilter === 'no-tag' ? '' : 'border-slate-300 text-slate-500'}
+                    >
+                        タグなし
+                    </Button>
                     {tags.map(tag => (
                         <Button
                             key={tag.id}
@@ -259,72 +337,97 @@ export default function FriendsPage() {
 
             {/* 友だちリスト */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredFriends.map(friend => (
-                    <Card
-                        key={friend.id}
-                        className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.01] group"
-                        onClick={() => setSelectedFriend(friend)}
-                    >
-                        <CardContent className="p-4">
-                            <div className="flex items-start gap-3">
-                                {friend.picture_url ? (
-                                    <img
-                                        src={friend.picture_url}
-                                        alt={friend.display_name || ''}
-                                        className="w-12 h-12 rounded-full object-cover"
-                                    />
-                                ) : (
-                                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center">
-                                        <User className="w-6 h-6 text-slate-500" />
+                {filteredFriends.map(friend => {
+                    const isSelected = selectedFriendIds.has(friend.id)
+                    return (
+                        <Card
+                            key={friend.id}
+                            className={cn(
+                                "cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.01] group",
+                                isSelectionMode && isSelected && "ring-2 ring-emerald-500 bg-emerald-50/30 dark:bg-emerald-900/10"
+                            )}
+                            onClick={() => {
+                                if (isSelectionMode) {
+                                    toggleFriendSelection(friend.id)
+                                } else {
+                                    setSelectedFriend(friend)
+                                }
+                            }}
+                        >
+                            <CardContent className="p-4">
+                                <div className="flex items-start gap-3">
+                                    {isSelectionMode && (
+                                        <div className="shrink-0 mt-0.5">
+                                            {isSelected ? (
+                                                <CheckSquare className="w-5 h-5 text-emerald-500" />
+                                            ) : (
+                                                <Square className="w-5 h-5 text-slate-300" />
+                                            )}
+                                        </div>
+                                    )}
+                                    {friend.picture_url ? (
+                                        <img
+                                            src={friend.picture_url}
+                                            alt={friend.display_name || ''}
+                                            className="w-12 h-12 rounded-full object-cover"
+                                        />
+                                    ) : (
+                                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center">
+                                            <User className="w-6 h-6 text-slate-500" />
+                                        </div>
+                                    )}
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <h3 className="font-medium truncate">
+                                                {friend.display_name || friend.internal_name || '名前なし'}
+                                            </h3>
+                                            {!isSelectionMode && (
+                                                <div className="p-1 rounded-full hover:bg-slate-100 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <Pencil className="w-3 h-3" />
+                                                </div>
+                                            )}
+                                        </div>
+                                        {friend.internal_name && friend.display_name && friend.internal_name !== friend.display_name && (
+                                            <p className="text-sm text-slate-500 truncate">
+                                                管理名: {friend.internal_name}
+                                            </p>
+                                        )}
+                                        <p className="text-xs text-slate-400 mt-1">
+                                            {formatDateTime(friend.followed_at)}
+                                            <span className="ml-1">({getRelativeTime(friend.followed_at)}に追加)</span>
+                                        </p>
+                                    </div>
+                                    {!isSelectionMode && (
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="shrink-0 text-blue-500 hover:text-blue-600 hover:bg-blue-50"
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                router.push(`/dashboard/chats?userId=${friend.id}`)
+                                            }}
+                                        >
+                                            <MessageCircle className="w-5 h-5" />
+                                        </Button>
+                                    )}
+                                </div>
+                                {friend.line_user_tags.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-3">
+                                        {friend.line_user_tags.map(ut => (
+                                            <span
+                                                key={ut.tag_id}
+                                                className="px-2 py-0.5 text-xs rounded-full text-white"
+                                                style={{ backgroundColor: ut.tags.color }}
+                                            >
+                                                {ut.tags.name}
+                                            </span>
+                                        ))}
                                     </div>
                                 )}
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <h3 className="font-medium truncate">
-                                            {friend.display_name || friend.internal_name || '名前なし'}
-                                        </h3>
-                                        <div className="p-1 rounded-full hover:bg-slate-100 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <Pencil className="w-3 h-3" />
-                                        </div>
-                                    </div>
-                                    {friend.internal_name && friend.display_name && friend.internal_name !== friend.display_name && (
-                                        <p className="text-sm text-slate-500 truncate">
-                                            管理名: {friend.internal_name}
-                                        </p>
-                                    )}
-                                    <p className="text-xs text-slate-400 mt-1">
-                                        {formatDateTime(friend.followed_at)}
-                                        <span className="ml-1">({getRelativeTime(friend.followed_at)}に追加)</span>
-                                    </p>
-                                </div>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="shrink-0 text-blue-500 hover:text-blue-600 hover:bg-blue-50"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        router.push(`/dashboard/chats?userId=${friend.id}`)
-                                    }}
-                                >
-                                    <MessageCircle className="w-5 h-5" />
-                                </Button>
-                            </div>
-                            {friend.line_user_tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-3">
-                                    {friend.line_user_tags.map(ut => (
-                                        <span
-                                            key={ut.tag_id}
-                                            className="px-2 py-0.5 text-xs rounded-full text-white"
-                                            style={{ backgroundColor: ut.tags.color }}
-                                        >
-                                            {ut.tags.name}
-                                        </span>
-                                    ))}
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-                ))}
+                            </CardContent>
+                        </Card>
+                    )
+                })}
             </div>
 
             {filteredFriends.length === 0 && (
@@ -356,7 +459,6 @@ export default function FriendsPage() {
                 />
             )}
 
-            {/* 一括ステップ配信モーダル */}
             {showBatchStepModal && (
                 <BatchStepModal
                     targetUsers={filteredFriends}
@@ -364,12 +466,156 @@ export default function FriendsPage() {
                     onClose={() => setShowBatchStepModal(false)}
                     onSuccess={() => {
                         setShowBatchStepModal(false)
-                        // fetch actions aren't strictly required since it doesn't change friends display directly,
-                        // but good for ensuring up-to-date execution status inside FriendDetailModal
                         if (currentChannelId) fetchData(currentChannelId)
                     }}
                 />
             )}
+
+            {showBatchTagModal && (
+                <BatchTagModal
+                    targetUsers={selectedFriends}
+                    tags={tags}
+                    onClose={() => setShowBatchTagModal(false)}
+                    onSuccess={() => {
+                        setShowBatchTagModal(false)
+                        setIsSelectionMode(false)
+                        setSelectedFriendIds(new Set())
+                        if (currentChannelId) fetchData(currentChannelId)
+                    }}
+                />
+            )}
+        </div>
+    )
+}
+
+interface BatchTagModalProps {
+    targetUsers: LineUserWithTags[]
+    tags: Tag[]
+    onClose: () => void
+    onSuccess: () => void
+}
+
+function BatchTagModal({ targetUsers, tags, onClose, onSuccess }: BatchTagModalProps) {
+    const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set())
+    const [loading, setLoading] = useState(false)
+    const [result, setResult] = useState<string | null>(null)
+
+    const toggleTag = (tagId: string) => {
+        setSelectedTagIds(prev => {
+            const next = new Set(prev)
+            if (next.has(tagId)) {
+                next.delete(tagId)
+            } else {
+                next.add(tagId)
+            }
+            return next
+        })
+    }
+
+    const handleAssign = async () => {
+        if (selectedTagIds.size === 0) return
+
+        setLoading(true)
+        setResult(null)
+
+        try {
+            const res = await fetch('/api/tags/bulk-assign', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userIds: targetUsers.map(u => u.id),
+                    tagIds: Array.from(selectedTagIds),
+                }),
+            })
+
+            const data = await res.json()
+
+            if (res.ok) {
+                setResult(`${data.processed}人にタグを付与しました`)
+                setTimeout(() => {
+                    onSuccess()
+                }, 1500)
+            } else {
+                setResult(`エラー: ${data.error}`)
+            }
+        } catch {
+            setResult('エラーが発生しました')
+        }
+
+        setLoading(false)
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+            <Card className="relative w-full max-w-lg shadow-xl">
+                <CardHeader className="flex flex-row items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                        <TagIcon className="w-5 h-5 text-emerald-500" />
+                        一括タグ付与
+                    </CardTitle>
+                    <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
+                        <X className="w-5 h-5" />
+                    </button>
+                </CardHeader>
+                <CardContent className="space-y-6 pt-6">
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg text-sm text-emerald-800 dark:text-emerald-200">
+                        <strong>{targetUsers.length}人</strong> の友だちに選択したタグを追加します。
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">付与するタグを選択</label>
+                        {tags.length === 0 ? (
+                            <p className="text-sm text-slate-500">タグがまだありません。タグ管理から作成してください。</p>
+                        ) : (
+                            <div className="flex flex-wrap gap-2">
+                                {tags.map(tag => {
+                                    const isSelected = selectedTagIds.has(tag.id)
+                                    return (
+                                        <button
+                                            key={tag.id}
+                                            onClick={() => toggleTag(tag.id)}
+                                            className={cn(
+                                                "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border-2",
+                                                isSelected
+                                                    ? "text-white shadow-md"
+                                                    : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 border-transparent"
+                                            )}
+                                            style={isSelected ? { backgroundColor: tag.color, borderColor: tag.color } : { borderColor: tag.color }}
+                                        >
+                                            {isSelected && <Check className="w-3 h-3 inline mr-1" />}
+                                            {tag.name}
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    {result && (
+                        <div className={cn(
+                            "p-3 rounded-lg text-sm",
+                            result.startsWith('エラー')
+                                ? "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                                : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                        )}>
+                            {result}
+                        </div>
+                    )}
+
+                    <div className="flex justify-end gap-3 pt-2">
+                        <Button variant="outline" onClick={onClose}>キャンセル</Button>
+                        <Button
+                            onClick={handleAssign}
+                            disabled={selectedTagIds.size === 0 || loading || tags.length === 0}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                        >
+                            {loading && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                            {selectedTagIds.size > 0 ? `${selectedTagIds.size}個のタグを付与` : 'タグを選択してください'}
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     )
 }
@@ -532,8 +778,6 @@ function ImportFriendsModal({ channelId, onClose, onSuccess }: ImportFriendsModa
         setResult(null)
 
         if (mode === 'lmessage') {
-            // LMessage mode: No preview parsing on client (Shift-JIS issue)
-            // Just show filename and ready state
             return
         }
 
@@ -546,9 +790,8 @@ function ImportFriendsModal({ channelId, onClose, onSuccess }: ImportFriendsModa
                     return
                 }
 
-                // カラムチェック
                 const headers = results.meta.fields || []
-                const required = ['lineUserId'] // 最低限必須
+                const required = ['lineUserId']
                 const missing = required.filter(h => !headers.includes(h))
 
                 if (missing.length > 0) {
@@ -572,7 +815,6 @@ function ImportFriendsModal({ channelId, onClose, onSuccess }: ImportFriendsModa
 
         try {
             if (mode === 'lmessage') {
-                // LMessage Import (Backend Processing)
                 const formData = new FormData()
                 formData.append('file', file)
                 formData.append('channelId', channelId)
@@ -598,7 +840,6 @@ function ImportFriendsModal({ channelId, onClose, onSuccess }: ImportFriendsModa
                 }, 2000)
 
             } else {
-                // Standard Import (Frontend Parsing)
                 Papa.parse(file, {
                     header: true,
                     skipEmptyLines: true,
@@ -637,7 +878,7 @@ function ImportFriendsModal({ channelId, onClose, onSuccess }: ImportFriendsModa
         } catch (error: any) {
             setParseError(error.message)
         } finally {
-            if (mode === 'lmessage') setUploading(false) // Standard mode handles loading inside complete callback
+            if (mode === 'lmessage') setUploading(false)
         }
     }
 
@@ -803,10 +1044,8 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
 
 
     const [tagLoading, setTagLoading] = useState<string | null>(null)
-    // Local state for optimistic UI updates
     const [localTagIds, setLocalTagIds] = useState<string[]>(friend.line_user_tags.map(ut => ut.tag_id))
 
-    // ステップ配信用の状態
     const [scenarios, setScenarios] = useState<any[]>([])
     const [executions, setExecutions] = useState<any[]>([])
     const [selectedScenarioId, setSelectedScenarioId] = useState('')
@@ -886,8 +1125,6 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
         }
     }
 
-
-    // Update local state when friend prop changes (e.g. after parent re-fetch)
     useEffect(() => {
         setLocalTagIds(friend.line_user_tags.map(ut => ut.tag_id))
     }, [friend])
@@ -909,7 +1146,6 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
         setTagLoading(tagId)
         const hasTag = localTagIds.includes(tagId)
 
-        // Optimistic Update
         setLocalTagIds(prev =>
             hasTag ? prev.filter(id => id !== tagId) : [...prev, tagId]
         )
@@ -927,7 +1163,6 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
             if (response.ok) {
                 onUpdate()
             } else {
-                // Revert on failure
                 setLocalTagIds(prev =>
                     hasTag ? [...prev, tagId] : prev.filter(id => id !== tagId)
                 )
@@ -935,7 +1170,6 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
             }
         } catch (error) {
             console.error('タグ操作エラー:', error)
-            // Revert on error
             setLocalTagIds(prev =>
                 hasTag ? [...prev, tagId] : prev.filter(id => id !== tagId)
             )
