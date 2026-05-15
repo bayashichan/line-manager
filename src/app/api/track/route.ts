@@ -27,14 +27,17 @@ export async function POST(request: NextRequest) {
 
         const supabase = createAdminClient()
 
-        // 既存の pending レコードがある場合は新規 INSERT せず UPDATE
-        // 同一ユーザーが LIFF を複数回踏んでも pending が増殖しないようにする
-        const { data: existing } = await supabase
+        // 直近の重複レコードを排除する。
+        // - pending があれば UPDATE
+        // - 30 分以内に converted されたレコードがあれば、ユーザーが LIFF を再訪しても新規 INSERT せずに無視
+        //   （Webhook が既に CAPI を発火済みなので、新規 pending を作ると永久にコンバージョンしない孤児が残る）
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+        const { data: recent } = await supabase
             .from('ad_conversions')
-            .select('id')
+            .select('id, status')
             .eq('channel_id', channel_id)
             .eq('line_user_id', line_user_id)
-            .eq('status', 'pending')
+            .gte('created_at', thirtyMinutesAgo)
             .order('created_at', { ascending: false })
             .limit(1)
             .maybeSingle()
@@ -48,8 +51,13 @@ export async function POST(request: NextRequest) {
             client_ip: clientIp,
         }
 
-        const { error } = existing
-            ? await supabase.from('ad_conversions').update(payload).eq('id', existing.id)
+        if (recent?.status === 'converted') {
+            // 30 分以内に CAPI 発火済み。重複作成を防ぐためここで終了。
+            return NextResponse.json({ success: true, deduplicated: true })
+        }
+
+        const { error } = recent?.status === 'pending'
+            ? await supabase.from('ad_conversions').update(payload).eq('id', recent.id)
             : await supabase.from('ad_conversions').insert({ channel_id, line_user_id, ...payload })
 
         if (error) {
