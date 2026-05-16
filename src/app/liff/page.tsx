@@ -2,6 +2,18 @@
 
 import { useEffect, useState } from 'react'
 
+/**
+ * document.cookie から指定名のクッキー値を取得する。
+ * LIFF と LP が同一ドメイン (updatehayashi.jp) で動く場合は _fbp/_fbc クッキーが
+ * そのまま読めるため、URL パラメータが欠落していてもフォールバックとして利用する。
+ * クロスドメインの場合は単に空文字を返すだけで害はない。
+ */
+function readCookie(name: string): string {
+    if (typeof document === 'undefined') return ''
+    const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=([^;]*)'))
+    return match ? decodeURIComponent(match[1]) : ''
+}
+
 export default function LiffPage() {
     const [isInAppBrowser, setIsInAppBrowser] = useState(false)
     const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null)
@@ -26,7 +38,8 @@ export default function LiffPage() {
                 ? new URLSearchParams(decodeURIComponent(liffState).replace(/^\?/, ''))
                 : urlParams
             const fbclid = params.get('fbclid')
-            const fbp = params.get('fbp')
+            const fbp = params.get('fbp') ?? readCookie('_fbp')
+            const fbc = params.get('fbc') ?? readCookie('_fbc')
             const tag = params.get('tag')
             const ch = params.get('ch')
             const oa = params.get('oa')
@@ -52,6 +65,7 @@ export default function LiffPage() {
                         line_user_id: lineUserId,
                         fbclid: fbclid || null,
                         fbp: fbp || null,
+                        fbc: fbc || null,
                         tag: tag || null,
                         user_agent: navigator.userAgent,
                         event_source_url: 'https://updatehayashi.jp/',
@@ -120,7 +134,7 @@ export default function LiffPage() {
                     const decoded = decodeURIComponent(liffState).replace(/^\?/, '')
                     const decodedParams = new URLSearchParams(decoded)
                     const clean = new URLSearchParams()
-                    for (const key of ['fbclid', 'fbp', 'tag', 'ch', 'oa']) {
+                    for (const key of ['fbclid', 'fbp', 'fbc', 'tag', 'ch', 'oa']) {
                         const val = decodedParams.get(key)
                         if (val) clean.set(key, val)
                     }
