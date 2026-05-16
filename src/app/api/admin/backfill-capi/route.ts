@@ -23,8 +23,10 @@ import { sendMetaCapiEvent } from '@/lib/meta-capi'
  *     -d '{"dryRun": true, "maxAgeDays": 7}'
  */
 export async function POST(request: NextRequest) {
-    // TEMPORARY: auth disabled for one-shot backfill run. Revert after use.
-    // event_id is deterministic so Meta dedups; blast radius if abused is negligible.
+    const authHeader = request.headers.get('authorization')
+    if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return NextResponse.json({ error: '認証エラー' }, { status: 401 })
+    }
 
     let body: { dryRun?: boolean; maxAgeDays?: number; limit?: number } = {}
     try {
