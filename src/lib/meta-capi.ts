@@ -51,6 +51,12 @@ export function buildMetaEventId(channelId: string, lineUserId: string, eventNam
         .slice(0, 32)
 }
 
+export type SendMetaCapiResult =
+    | { status: 'sent'; metaEventId: string }
+    | { status: 'no_pending' }
+    | { status: 'env_missing' }
+    | { status: 'api_error'; message: string }
+
 /**
  * Meta Conversions API へ Lead イベントを送信する。
  *
@@ -58,17 +64,19 @@ export function buildMetaEventId(channelId: string, lineUserId: string, eventNam
  * - 送信成功/失敗にかかわらず status を converted に進める（再試行は Meta 側の dedup に委ねる）。
  * - event_id は deterministic に生成し、リトライや track-after-follow 救済経路で
  *   重複発火しても Meta 側で必ず dedup される。
+ * - `eventTimeSeconds` を指定するとイベント時刻を上書きできる（バックフィルで followed_at を使う用途）。
  */
 export async function sendMetaCapiEvent(
     supabase: AdminClient,
     channelId: string,
-    lineUserId: string
-): Promise<void> {
+    lineUserId: string,
+    options?: { eventTimeSeconds?: number }
+): Promise<SendMetaCapiResult> {
     const pixelId = process.env.META_PIXEL_ID
     const accessToken = process.env.META_ACCESS_TOKEN
     if (!pixelId || !accessToken) {
         console.warn('Meta CAPI環境変数未設定 (META_PIXEL_ID / META_ACCESS_TOKEN)')
-        return
+        return { status: 'env_missing' }
     }
 
     const { data: conversion } = await supabase
@@ -83,11 +91,11 @@ export async function sendMetaCapiEvent(
 
     if (!conversion) {
         // 広告経由ではない友だち追加 (正常パス)、または既に converted 済み
-        return
+        return { status: 'no_pending' }
     }
 
     const row = conversion as ConversionRow
-    const eventTime = Math.floor(Date.now() / 1000)
+    const eventTime = options?.eventTimeSeconds ?? Math.floor(Date.now() / 1000)
     const fbcValue = buildFbc(row)
     const hashedExternalId = createHash('sha256').update(lineUserId).digest('hex')
     const metaEventId = buildMetaEventId(channelId, lineUserId)
@@ -137,8 +145,9 @@ export async function sendMetaCapiEvent(
     if (!res.ok) {
         const errText = await res.text()
         console.error(`Meta CAPI APIエラー (userId: ${lineUserId}):`, errText)
-        return
+        return { status: 'api_error', message: errText }
     }
 
     console.log(`Meta CAPI送信成功 (userId: ${lineUserId}, fbclid: ${row.fbclid ?? 'なし'})`)
+    return { status: 'sent', metaEventId }
 }
