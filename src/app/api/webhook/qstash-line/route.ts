@@ -213,7 +213,7 @@ async function completeMessage(adminClient: any, messageId: string, total: numbe
     await adminClient
         .from('messages')
         .update({
-            status: 'sent',
+            status: total > 0 && failure === total ? 'failed' : 'sent',
             total_recipients: total,
             success_count: success,
             failure_count: failure,

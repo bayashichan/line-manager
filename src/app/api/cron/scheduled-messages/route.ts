@@ -73,9 +73,22 @@ export async function GET(request: NextRequest) {
                         .select('line_user_id')
                         .in('tag_id', message.filter_tags)
 
-                    if (filteredUsers) {
+                    if (filteredUsers && filteredUsers.length > 0) {
                         const userIds = [...new Set(filteredUsers.map(u => u.line_user_id))]
                         query = query.in('id', userIds)
+                    } else {
+                        await supabase
+                            .from('messages')
+                            .update({
+                                status: 'sent',
+                                total_recipients: 0,
+                                success_count: 0,
+                                failure_count: 0,
+                                sent_at: now,
+                            })
+                            .eq('id', message.id)
+                        processedCount++
+                        continue
                     }
                 }
 

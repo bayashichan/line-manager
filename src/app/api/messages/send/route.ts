@@ -56,6 +56,16 @@ export async function POST(request: NextRequest) {
                 const userIds = [...new Set(filteredUsers.map(u => u.line_user_id))]
                 query = query.in('id', userIds)
             } else {
+                await adminClient
+                    .from('messages')
+                    .update({
+                        status: 'sent',
+                        total_recipients: 0,
+                        success_count: 0,
+                        failure_count: 0,
+                        sent_at: new Date().toISOString(),
+                    })
+                    .eq('id', messageId)
                 return NextResponse.json({ success: true, sent: 0 })
             }
         }
