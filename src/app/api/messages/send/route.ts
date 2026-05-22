@@ -9,6 +9,7 @@ import { chunk } from '@/lib/utils'
  * POST /api/messages/send
  */
 export async function POST(request: NextRequest) {
+    let messageId: string | undefined
     try {
         const supabase = await createClient()
         const { data: { user } } = await supabase.auth.getUser()
@@ -17,7 +18,8 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
         }
 
-        const { messageId } = await request.json()
+        const body = await request.json()
+        messageId = body.messageId
 
         if (!messageId) {
             return NextResponse.json({ error: 'messageId が必要です' }, { status: 400 })
@@ -242,6 +244,20 @@ export async function POST(request: NextRequest) {
         })
     } catch (error) {
         console.error('メッセージ送信エラー:', error)
+        if (messageId) {
+            try {
+                const adminClient = createAdminClient()
+                await adminClient
+                    .from('messages')
+                    .update({
+                        status: 'failed',
+                        sent_at: new Date().toISOString(),
+                    })
+                    .eq('id', messageId)
+            } catch (updateError) {
+                console.error('ステータス更新失敗:', updateError)
+            }
+        }
         return NextResponse.json(
             { error: '内部サーバーエラー' },
             { status: 500 }
