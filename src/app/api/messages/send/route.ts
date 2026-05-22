@@ -112,6 +112,7 @@ export async function POST(request: NextRequest) {
 
         let successCount = 0
         let failureCount = 0
+        let firstError: string | null = null
 
         // コンテンツの変換（リッチメッセージをFlex Messageに変換）
         const processedContent = (message.content as any[]).map((block: any) => {
@@ -205,9 +206,10 @@ export async function POST(request: NextRequest) {
 
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
-                    } catch (error) {
+                    } catch (error: any) {
                         console.error(`個別送信エラー (${userId}):`, error)
                         failureCount++
+                        if (!firstError) firstError = error?.message ?? String(error)
                     }
                 }))
             }
@@ -217,9 +219,10 @@ export async function POST(request: NextRequest) {
                 try {
                     await lineClient.multicast(batch, processedContent)
                     successCount += batch.length
-                } catch (error) {
+                } catch (error: any) {
                     console.error('配信エラー:', error)
                     failureCount += batch.length
+                    if (!firstError) firstError = error?.message ?? String(error)
                 }
             }
         }
@@ -232,6 +235,7 @@ export async function POST(request: NextRequest) {
                 total_recipients: recipients.length,
                 success_count: successCount,
                 failure_count: failureCount,
+                error_detail: failureCount > 0 ? firstError : null,
                 sent_at: new Date().toISOString(),
             })
             .eq('id', messageId)

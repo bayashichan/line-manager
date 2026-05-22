@@ -112,6 +112,7 @@ export interface Message {
     total_recipients: number
     success_count: number
     failure_count: number
+    error_detail: string | null
     created_at: string
     updated_at: string
 }

@@ -106,6 +106,7 @@ async function handler(request: NextRequest) {
 
         let successCount = 0
         let failureCount = 0
+        let firstError: string | null = null
 
         // コンテンツの変換
         const processedContent = (message.content as any[]).map((block: any) => {
@@ -178,9 +179,10 @@ async function handler(request: NextRequest) {
                         })
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
-                    } catch (error) {
+                    } catch (error: any) {
                         console.error(`個別送信エラー (${userId}):`, error)
                         failureCount++
+                        if (!firstError) firstError = error?.message ?? String(error)
                     }
                 }))
             }
@@ -190,15 +192,16 @@ async function handler(request: NextRequest) {
                 try {
                     await lineClient.multicast(batch, processedContent)
                     successCount += batch.length
-                } catch (error) {
+                } catch (error: any) {
                     console.error('配信エラー:', error)
                     failureCount += batch.length
+                    if (!firstError) firstError = error?.message ?? String(error)
                 }
             }
         }
 
         // 4. ステータス更新と完了
-        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount)
+        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount, firstError)
 
         return NextResponse.json({ success: true, successCount, failureCount })
 
@@ -209,7 +212,7 @@ async function handler(request: NextRequest) {
 }
 
 // 完了時のDB更新ヘルパー
-async function completeMessage(adminClient: any, messageId: string, total: number, success: number, failure: number) {
+async function completeMessage(adminClient: any, messageId: string, total: number, success: number, failure: number, errorDetail: string | null = null) {
     await adminClient
         .from('messages')
         .update({
@@ -217,6 +220,7 @@ async function completeMessage(adminClient: any, messageId: string, total: numbe
             total_recipients: total,
             success_count: success,
             failure_count: failure,
+            error_detail: failure > 0 ? errorDetail : null,
             sent_at: new Date().toISOString(),
         })
         .eq('id', messageId)

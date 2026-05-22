@@ -1265,6 +1265,11 @@ export default function MessagesPage() {
                                                     {message.success_count}/{message.total_recipients}人に配信
                                                 </p>
                                             )}
+                                            {message.status === 'failed' && (message as any).error_detail && (
+                                                <p className="text-xs text-red-500 mt-1 font-mono break-all max-w-[200px] text-right">
+                                                    {(message as any).error_detail}
+                                                </p>
+                                            )}
                                             {message.status === 'scheduled' && message.scheduled_at && (
                                                 <div className="flex flex-col items-end gap-2 mt-1">
                                                     <p className="text-amber-600">

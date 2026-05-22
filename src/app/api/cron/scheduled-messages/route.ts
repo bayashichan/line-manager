@@ -119,14 +119,16 @@ export async function GET(request: NextRequest) {
 
                 let successCount = 0
                 let failureCount = 0
+                let firstError: string | null = null
 
                 for (const batch of batches) {
                     try {
                         await lineClient.multicast(batch, message.content as object[])
                         successCount += batch.length
-                    } catch (err) {
+                    } catch (err: any) {
                         console.error('配信エラー:', err)
                         failureCount += batch.length
+                        if (!firstError) firstError = err?.message ?? String(err)
                     }
                 }
 
@@ -138,6 +140,7 @@ export async function GET(request: NextRequest) {
                         total_recipients: recipients.length,
                         success_count: successCount,
                         failure_count: failureCount,
+                        error_detail: failureCount > 0 ? firstError : null,
                         sent_at: now,
                     })
                     .eq('id', message.id)
