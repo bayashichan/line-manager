@@ -217,7 +217,60 @@ async function handleFollow(
         console.log(`友だち追加/更新: ${profile.displayName} (${userId}) → DB ID: ${upsertedUser.id}`)
 
         // ====================================================================
+        // STEP 2.5: line_sessions照合 → ad_conversions事前生成
+        // LP広告クリック時のfbclid等をline_sessionsから取得し、
+        // sendMetaCapiEventが参照できるようad_conversionsにpending行を作成する。
+        // ====================================================================
+        if (options.sendCapi) {
+            try {
+                const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+                const { data: session } = await supabase
+                    .from('line_sessions')
+                    .select('id, fbclid, fbp, fbc, user_agent')
+                    .eq('channel_id', channel.id)
+                    .gte('clicked_at', tenMinutesAgo)
+                    .is('line_user_id', null)
+                    .order('clicked_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle()
+
+                if (session) {
+                    const clickTimeMs = Date.now()
+                    const resolvedFbc = session.fbc ?? (session.fbclid ? `fb.1.${clickTimeMs}.${session.fbclid}` : null)
+
+                    const [, insertResult] = await Promise.all([
+                        supabase
+                            .from('line_sessions')
+                            .update({ line_user_id: userId, matched_at: new Date().toISOString() })
+                            .eq('id', session.id),
+                        supabase
+                            .from('ad_conversions')
+                            .insert({
+                                channel_id: channel.id,
+                                line_user_id: userId,
+                                fbclid: session.fbclid ?? null,
+                                fbp: session.fbp ?? null,
+                                fbc: resolvedFbc,
+                                user_agent: session.user_agent ?? null,
+                                click_time_ms: clickTimeMs,
+                            }),
+                    ])
+
+                    if (insertResult.error) {
+                        console.error(`ad_conversions INSERT from line_sessions error (userId: ${userId}):`, insertResult.error)
+                    } else {
+                        console.log(`line_sessions照合成功: fbclid=${session.fbclid ?? 'なし'} (userId: ${userId})`)
+                    }
+                }
+            } catch (err) {
+                console.error(`line_sessions照合エラー (userId: ${userId}):`, err)
+            }
+        }
+
+        // ====================================================================
         // STEP 3: Meta CAPI 送信（follow イベントのみ。message での再発火を防ぐ）
+        // line_sessions照合済みの場合はSTEP 2.5で作成したad_conversionsを参照する。
+        // 照合なしの場合はフォールバックとして既存のad_conversionsを使用する。
         // ====================================================================
         if (options.sendCapi) {
             try {
