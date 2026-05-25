@@ -40,11 +40,11 @@ function buildFbc(conversion: ConversionRow): string | undefined {
 }
 
 /**
- * 同一 (channelId, lineUserId, eventName) の Lead 送信が
+ * 同一 (channelId, lineUserId, eventName) の送信が
  * Meta 側で確実に重複排除されるよう deterministic な event_id を生成。
  * Meta CAPI の dedup window は 7 日。
  */
-export function buildMetaEventId(channelId: string, lineUserId: string, eventName = 'Lead'): string {
+export function buildMetaEventId(channelId: string, lineUserId: string, eventName = 'CompleteRegistration'): string {
     return createHash('sha256')
         .update(`${channelId}:${lineUserId}:${eventName}`)
         .digest('hex')
@@ -58,19 +58,24 @@ export type SendMetaCapiResult =
     | { status: 'api_error'; message: string }
 
 /**
- * Meta Conversions API へ Lead イベントを送信する。
+ * Meta Conversions API へ友だち追加完了イベント (デフォルト: CompleteRegistration) を送信する。
+ *
+ * イベント名の使い分け:
+ *   - CompleteRegistration (デフォルト): LINE 友だち追加が確定した時点 (= 実登録) を表す。
+ *   - Lead: LP のボタン押下時など、登録意思を示した時点を表す。こちらは
+ *     `src/app/api/track/lead/route.ts` で直接 Meta に送る。
  *
  * - ad_conversions の pending 行が存在する場合のみ送信する。
  * - 送信成功/失敗にかかわらず status を converted に進める（再試行は Meta 側の dedup に委ねる）。
- * - event_id は deterministic に生成し、リトライや track-after-follow 救済経路で
- *   重複発火しても Meta 側で必ず dedup される。
+ * - event_id は (channelId, lineUserId, eventName) から deterministic に生成し、
+ *   リトライや track-after-follow 救済経路で重複発火しても Meta 側で必ず dedup される。
  * - `eventTimeSeconds` を指定するとイベント時刻を上書きできる（バックフィルで followed_at を使う用途）。
  */
 export async function sendMetaCapiEvent(
     supabase: AdminClient,
     channelId: string,
     lineUserId: string,
-    options?: { eventTimeSeconds?: number }
+    options?: { eventTimeSeconds?: number; eventName?: string }
 ): Promise<SendMetaCapiResult> {
     const pixelId = process.env.META_PIXEL_ID
     const accessToken = process.env.META_ACCESS_TOKEN
@@ -78,6 +83,8 @@ export async function sendMetaCapiEvent(
         console.warn('Meta CAPI環境変数未設定 (META_PIXEL_ID / META_ACCESS_TOKEN)')
         return { status: 'env_missing' }
     }
+
+    const eventName = options?.eventName ?? 'CompleteRegistration'
 
     const { data: conversion } = await supabase
         .from('ad_conversions')
@@ -98,12 +105,12 @@ export async function sendMetaCapiEvent(
     const eventTime = options?.eventTimeSeconds ?? Math.floor(Date.now() / 1000)
     const fbcValue = buildFbc(row)
     const hashedExternalId = createHash('sha256').update(lineUserId).digest('hex')
-    const metaEventId = buildMetaEventId(channelId, lineUserId)
+    const metaEventId = buildMetaEventId(channelId, lineUserId, eventName)
 
     const payload: Record<string, unknown> = {
         data: [
             {
-                event_name: 'Lead',
+                event_name: eventName,
                 event_time: eventTime,
                 event_id: metaEventId,
                 action_source: 'website',
@@ -148,6 +155,6 @@ export async function sendMetaCapiEvent(
         return { status: 'api_error', message: errText }
     }
 
-    console.log(`Meta CAPI送信成功 (userId: ${lineUserId}, fbclid: ${row.fbclid ?? 'なし'})`)
+    console.log(`Meta CAPI送信成功 [${eventName}] (userId: ${lineUserId}, fbclid: ${row.fbclid ?? 'なし'})`)
     return { status: 'sent', metaEventId }
 }
