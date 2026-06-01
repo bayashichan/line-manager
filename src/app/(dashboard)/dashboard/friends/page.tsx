@@ -281,25 +281,27 @@ export default function FriendsPage() {
             </div>
 
             {/* フィルター */}
-            <div className="flex flex-col gap-4 sm:flex-row">
-                <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <Input
-                        placeholder="名前で検索..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-10"
-                    />
-                </div>
-                <div className="flex items-center gap-2">
-                    <select
-                        value={sortOrder}
-                        onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
-                        className="h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400 dark:bg-slate-900 dark:border-slate-800"
-                    >
-                        <option value="desc">新しい順</option>
-                        <option value="asc">古い順</option>
-                    </select>
+            <div className="flex flex-col gap-3">
+                <div className="flex gap-2">
+                    <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                        <Input
+                            placeholder="名前で検索..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-10"
+                        />
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <select
+                            value={sortOrder}
+                            onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
+                            className="h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400 dark:bg-slate-900 dark:border-slate-800"
+                        >
+                            <option value="desc">新しい順</option>
+                            <option value="asc">古い順</option>
+                        </select>
+                    </div>
                 </div>
                 <div className="flex gap-2 flex-wrap">
                     <Button
