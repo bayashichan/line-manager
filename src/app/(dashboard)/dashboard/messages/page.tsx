@@ -26,7 +26,8 @@ import {
     MessageSquare,
     Play,
     ChevronDown,
-    ChevronUp
+    ChevronUp,
+    Pencil
 } from 'lucide-react'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -70,6 +71,7 @@ export default function MessagesPage() {
     const [isTestSending, setIsTestSending] = useState(false)
     const [showTestModal, setShowTestModal] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
+    const [editingMessage, setEditingMessage] = useState<Message | null>(null)
     const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null)
     const [sending, setSending] = useState(false)
 
@@ -231,6 +233,57 @@ export default function MessagesPage() {
         setFormScheduled(false)
         setFormScheduledAt('')
         setIsCreating(false)
+        setEditingMessage(null)
+    }
+
+    const contentToBlocks = (content: any[]): MessageBlock[] => {
+        return content.map(block => {
+            switch (block.type) {
+                case 'text':
+                    return { type: 'text', text: block.text || '' }
+                case 'image':
+                    return {
+                        type: 'image',
+                        imageUrl: block.originalContentUrl || block.previewImageUrl,
+                        imageType: block.customActions ? 'rich' : 'normal',
+                        customActions: block.customActions,
+                        width: block.aspectRatio ? Math.round(block.aspectRatio * 100) : undefined,
+                        height: block.aspectRatio ? 100 : undefined,
+                    }
+                case 'video':
+                    return {
+                        type: 'video',
+                        videoUrl: block.originalContentUrl,
+                        previewUrl: block.previewImageUrl,
+                    }
+                default:
+                    return { type: 'text', text: '' }
+            }
+        })
+    }
+
+    const handleEditMessage = (message: Message) => {
+        setEditingMessage(message)
+        setFormTitle(message.title)
+        setFormBlocks(contentToBlocks(message.content as any[]))
+        setFormSelectedTags(message.filter_tags || [])
+        setFormExcludeTags(message.exclude_tags || [])
+        setProjectedCount(null)
+        if (message.scheduled_at) {
+            setFormScheduled(true)
+            // datetime-local形式に変換
+            const dt = new Date(message.scheduled_at)
+            const local = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
+                .toISOString()
+                .slice(0, 16)
+            setFormScheduledAt(local)
+        } else {
+            setFormScheduled(false)
+            setFormScheduledAt('')
+        }
+        setIsCreating(true)
+        setExpandedMessageId(null)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
     const toggleTag = (tagId: string) => {
@@ -387,54 +440,90 @@ export default function MessagesPage() {
 
         try {
             const content = buildMessageContent()
-            const status = formScheduled ? 'scheduled' : 'sending'
             const scheduledAt = formScheduled && formScheduledAt
                 ? new Date(formScheduledAt).toISOString()
                 : null
 
-            const { data: message, error } = await supabase
-                .from('messages')
-                .insert({
-                    channel_id: currentChannelId,
-                    title: formTitle || '無題の配信',
-                    content,
-                    status,
-                    filter_tags: formSelectedTags.length > 0 ? formSelectedTags : null,
-                    exclude_tags: formExcludeTags.length > 0 ? formExcludeTags : null,
-                    scheduled_at: scheduledAt,
-                })
-                .select()
-                .single()
-
-            if (error) throw error
-
-            if (!formScheduled) {
-                const response = await fetch('/api/messages/send', {
+            if (editingMessage) {
+                // 編集モード：既存の予約メッセージを更新
+                const response = await fetch('/api/messages/update', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messageId: message.id }),
+                    body: JSON.stringify({
+                        messageId: editingMessage.id,
+                        title: formTitle || '無題の配信',
+                        content,
+                        filterTags: formSelectedTags,
+                        excludeTags: formExcludeTags,
+                        scheduledAt,
+                    }),
                 })
 
+                const data = await response.json()
                 if (!response.ok) {
-                    throw new Error('送信に失敗しました')
+                    throw new Error(data.error || 'メッセージの更新に失敗しました')
+                }
+
+                // 即時配信に変更した場合、送信APIを呼び出す
+                if (data.status === 'sending') {
+                    const sendResponse = await fetch('/api/messages/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messageId: editingMessage.id }),
+                    })
+
+                    if (!sendResponse.ok) {
+                        throw new Error('送信に失敗しました')
+                    }
                 }
             } else {
-                const response = await fetch('/api/schedule-broadcast', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messageId: message.id, scheduledAt }),
-                })
+                // 新規作成モード
+                const status = formScheduled ? 'scheduled' : 'sending'
 
-                if (!response.ok) {
-                    throw new Error('予約設定に失敗しました')
+                const { data: message, error } = await supabase
+                    .from('messages')
+                    .insert({
+                        channel_id: currentChannelId,
+                        title: formTitle || '無題の配信',
+                        content,
+                        status,
+                        filter_tags: formSelectedTags.length > 0 ? formSelectedTags : null,
+                        exclude_tags: formExcludeTags.length > 0 ? formExcludeTags : null,
+                        scheduled_at: scheduledAt,
+                    })
+                    .select()
+                    .single()
+
+                if (error) throw error
+
+                if (!formScheduled) {
+                    const response = await fetch('/api/messages/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messageId: message.id }),
+                    })
+
+                    if (!response.ok) {
+                        throw new Error('送信に失敗しました')
+                    }
+                } else {
+                    const response = await fetch('/api/schedule-broadcast', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messageId: message.id, scheduledAt }),
+                    })
+
+                    if (!response.ok) {
+                        throw new Error('予約設定に失敗しました')
+                    }
                 }
             }
 
             await fetchData(currentChannelId)
             resetForm()
-        } catch (error) {
+        } catch (error: any) {
             console.error('送信エラー:', error)
-            alert('送信に失敗しました')
+            alert(error.message || '送信に失敗しました')
         }
 
         setSending(false)
@@ -563,11 +652,11 @@ export default function MessagesPage() {
                 </Button>
             </div>
 
-            {/* 作成フォーム */}
+            {/* 作成／編集フォーム */}
             {isCreating && (
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between">
-                        <CardTitle>新規メッセージ配信</CardTitle>
+                        <CardTitle>{editingMessage ? '予約メッセージを編集' : '新規メッセージ配信'}</CardTitle>
                         <button onClick={resetForm} className="p-2 hover:bg-slate-100 rounded-lg">
                             <X className="w-5 h-5" />
                         </button>
@@ -1088,7 +1177,10 @@ export default function MessagesPage() {
                                 ) : (
                                     <>
                                         <Send className="w-4 h-4 mr-2" />
-                                        {formScheduled ? '予約する' : '配信する'}
+                                        {editingMessage
+                                            ? (formScheduled ? '予約を更新する' : '今すぐ配信する')
+                                            : (formScheduled ? '予約する' : '配信する')
+                                        }
                                     </>
                                 )}
                             </Button>
@@ -1270,6 +1362,15 @@ export default function MessagesPage() {
                                                     <p className="text-amber-600">
                                                         {formatDateTime(message.scheduled_at)}に配信予定
                                                     </p>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 h-8 text-xs"
+                                                        onClick={(e) => { e.stopPropagation(); handleEditMessage(message) }}
+                                                    >
+                                                        <Pencil className="w-3 h-3 mr-1" />
+                                                        編集
+                                                    </Button>
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
