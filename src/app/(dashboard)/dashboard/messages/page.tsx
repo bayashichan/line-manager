@@ -26,7 +26,8 @@ import {
     MessageSquare,
     Play,
     ChevronDown,
-    ChevronUp
+    ChevronUp,
+    Pencil
 } from 'lucide-react'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -70,6 +71,7 @@ export default function MessagesPage() {
     const [isTestSending, setIsTestSending] = useState(false)
     const [showTestModal, setShowTestModal] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
     const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null)
     const [sending, setSending] = useState(false)
 
@@ -231,6 +233,60 @@ export default function MessagesPage() {
         setFormScheduled(false)
         setFormScheduledAt('')
         setIsCreating(false)
+        setEditingMessageId(null)
+    }
+
+    // ISO文字列を datetime-local の value 形式 (YYYY-MM-DDTHH:mm / ローカル時刻) に変換
+    const toDatetimeLocal = (iso: string) => {
+        const d = new Date(iso)
+        const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+        return local.toISOString().slice(0, 16)
+    }
+
+    // 保存済みの content(LINEメッセージ形式) をフォームのブロック形式に戻す
+    const contentToBlocks = (content: any[]): MessageBlock[] => {
+        if (!content || content.length === 0) return [{ type: 'text', text: '' }]
+
+        return content.map((block: any): MessageBlock => {
+            switch (block.type) {
+                case 'image':
+                    return {
+                        type: 'image',
+                        imageUrl: block.originalContentUrl || block.previewImageUrl,
+                        imageType: block.customActions ? 'rich' : 'normal',
+                        customActions: block.customActions,
+                        // aspectRatio(width/height)から比率を復元
+                        width: block.aspectRatio ? block.aspectRatio : undefined,
+                        height: block.aspectRatio ? 1 : undefined,
+                    }
+                case 'video':
+                    return {
+                        type: 'video',
+                        videoUrl: block.originalContentUrl,
+                        previewUrl: block.previewImageUrl,
+                    }
+                case 'text':
+                default:
+                    return { type: 'text', text: block.text || '' }
+            }
+        })
+    }
+
+    const handleEditSchedule = (message: Message) => {
+        setEditingMessageId(message.id)
+        setFormTitle(message.title === '無題の配信' ? '' : message.title)
+        setFormBlocks(contentToBlocks(message.content as any[]))
+        setFormSelectedTags(message.filter_tags || [])
+        setFormExcludeTags(message.exclude_tags || [])
+        setFormScheduled(true)
+        setFormScheduledAt(message.scheduled_at ? toDatetimeLocal(message.scheduled_at) : '')
+        setProjectedCount(null)
+        setIsCreating(true)
+        setExpandedMessageId(null)
+        // フォームが画面上部に表示されるようスクロール
+        if (typeof window !== 'undefined') {
+            window.scrollTo({ top: 0, behavior: 'smooth' })
+        }
     }
 
     const toggleTag = (tagId: string) => {
@@ -387,10 +443,51 @@ export default function MessagesPage() {
 
         try {
             const content = buildMessageContent()
-            const status = formScheduled ? 'scheduled' : 'sending'
             const scheduledAt = formScheduled && formScheduledAt
                 ? new Date(formScheduledAt).toISOString()
                 : null
+
+            // 予約中メッセージの編集
+            if (editingMessageId) {
+                if (!scheduledAt) {
+                    alert('配信予定日時を指定してください')
+                    setSending(false)
+                    return
+                }
+
+                const { error: updateError } = await supabase
+                    .from('messages')
+                    .update({
+                        title: formTitle || '無題の配信',
+                        content,
+                        status: 'scheduled',
+                        filter_tags: formSelectedTags.length > 0 ? formSelectedTags : null,
+                        exclude_tags: formExcludeTags.length > 0 ? formExcludeTags : null,
+                        scheduled_at: scheduledAt,
+                    })
+                    .eq('id', editingMessageId)
+
+                if (updateError) throw updateError
+
+                // QStashジョブを張り替え (旧ジョブ削除 + 新ジョブ登録)
+                const response = await fetch('/api/messages/reschedule', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messageId: editingMessageId, scheduledAt }),
+                })
+
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}))
+                    throw new Error(data.error || '予約の更新に失敗しました')
+                }
+
+                await fetchData(currentChannelId)
+                resetForm()
+                setSending(false)
+                return
+            }
+
+            const status = formScheduled ? 'scheduled' : 'sending'
 
             const { data: message, error } = await supabase
                 .from('messages')
@@ -432,9 +529,9 @@ export default function MessagesPage() {
 
             await fetchData(currentChannelId)
             resetForm()
-        } catch (error) {
+        } catch (error: any) {
             console.error('送信エラー:', error)
-            alert('送信に失敗しました')
+            alert(error?.message || '送信に失敗しました')
         }
 
         setSending(false)
@@ -567,7 +664,7 @@ export default function MessagesPage() {
             {isCreating && (
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between">
-                        <CardTitle>新規メッセージ配信</CardTitle>
+                        <CardTitle>{editingMessageId ? '予約メッセージの編集' : '新規メッセージ配信'}</CardTitle>
                         <button onClick={resetForm} className="p-2 hover:bg-slate-100 rounded-lg">
                             <X className="w-5 h-5" />
                         </button>
@@ -1043,20 +1140,27 @@ export default function MessagesPage() {
 
                         {/* 予約配信 */}
                         <div className="space-y-3">
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="checkbox"
-                                    id="scheduled"
-                                    checked={formScheduled}
-                                    onChange={(e) => setFormScheduled(e.target.checked)}
-                                    className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                                />
-                                <Label htmlFor="scheduled" className="cursor-pointer flex items-center gap-2">
+                            {editingMessageId ? (
+                                <Label className="flex items-center gap-2">
                                     <Calendar className="w-4 h-4" />
-                                    予約配信
+                                    配信予定日時
                                 </Label>
-                            </div>
-                            {formScheduled && (
+                            ) : (
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="checkbox"
+                                        id="scheduled"
+                                        checked={formScheduled}
+                                        onChange={(e) => setFormScheduled(e.target.checked)}
+                                        className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                    />
+                                    <Label htmlFor="scheduled" className="cursor-pointer flex items-center gap-2">
+                                        <Calendar className="w-4 h-4" />
+                                        予約配信
+                                    </Label>
+                                </div>
+                            )}
+                            {(formScheduled || editingMessageId) && (
                                 <Input
                                     type="datetime-local"
                                     value={formScheduledAt}
@@ -1083,12 +1187,12 @@ export default function MessagesPage() {
                                 {sending ? (
                                     <>
                                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                        送信中...
+                                        {editingMessageId ? '更新中...' : '送信中...'}
                                     </>
                                 ) : (
                                     <>
                                         <Send className="w-4 h-4 mr-2" />
-                                        {formScheduled ? '予約する' : '配信する'}
+                                        {editingMessageId ? '更新する' : (formScheduled ? '予約する' : '配信する')}
                                     </>
                                 )}
                             </Button>
@@ -1261,23 +1365,41 @@ export default function MessagesPage() {
                                                 {formatDateTime(message.created_at)}
                                             </p>
                                             {message.status === 'sent' && (
-                                                <p className="text-emerald-600 mt-1">
-                                                    {message.success_count}/{message.total_recipients}人に配信
-                                                </p>
+                                                <div className="flex flex-col items-start sm:items-end mt-1">
+                                                    <p className="text-emerald-600">
+                                                        {message.success_count}/{message.total_recipients}人に配信
+                                                    </p>
+                                                    {message.sent_at && (
+                                                        <p className="text-slate-500 text-xs mt-0.5">
+                                                            {formatDateTime(message.sent_at)}に配信
+                                                        </p>
+                                                    )}
+                                                </div>
                                             )}
                                             {message.status === 'scheduled' && message.scheduled_at && (
                                                 <div className="flex flex-col items-end gap-2 mt-1">
                                                     <p className="text-amber-600">
                                                         {formatDateTime(message.scheduled_at)}に配信予定
                                                     </p>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        className="text-red-500 hover:text-red-600 hover:bg-red-50 h-8 text-xs"
-                                                        onClick={(e) => { e.stopPropagation(); handleCancelSchedule(message.id) }}
-                                                    >
-                                                        予約をキャンセル
-                                                    </Button>
+                                                    <div className="flex items-center gap-1">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 h-8 text-xs"
+                                                            onClick={(e) => { e.stopPropagation(); handleEditSchedule(message) }}
+                                                        >
+                                                            <Pencil className="w-3.5 h-3.5 mr-1" />
+                                                            編集
+                                                        </Button>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="text-red-500 hover:text-red-600 hover:bg-red-50 h-8 text-xs"
+                                                            onClick={(e) => { e.stopPropagation(); handleCancelSchedule(message.id) }}
+                                                        >
+                                                            予約をキャンセル
+                                                        </Button>
+                                                    </div>
                                                 </div>
                                             )}
                                             <div className="flex items-center gap-1 mt-1 text-slate-400 hover:text-emerald-500 transition-colors">
