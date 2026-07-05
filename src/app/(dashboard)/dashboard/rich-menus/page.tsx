@@ -138,6 +138,17 @@ const RICH_MENU_TEMPLATES = [
     }
 ]
 
+// UTC(ISO文字列)を datetime-local 用のローカル時刻文字列 (YYYY-MM-DDTHH:mm) に変換する。
+// toISOString() をそのまま使うとUTCの壁時計時刻になり、保存時のローカル時刻解釈と
+// ずれてしまう（例: JSTで23:59保存 → 再表示で14:59）ため、タイムゾーンオフセット分を補正する。
+const toDatetimeLocalValue = (value: string | null | undefined): string => {
+    if (!value) return ''
+    const date = new Date(value)
+    if (isNaN(date.getTime())) return ''
+    const offsetMs = date.getTimezoneOffset() * 60000
+    return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16)
+}
+
 export default function RichMenusPage() {
     const [richMenus, setRichMenus] = useState<RichMenu[]>([])
     const [tags, setTags] = useState<any[]>([]) // Tag type should be imported or defined
@@ -248,8 +259,10 @@ export default function RichMenusPage() {
         setFormIsDefault(menu.is_default)
         setFormAreas(menu.areas || [])
         // Period
-        setFormDisplayStart(menu.display_period_start ? new Date(menu.display_period_start).toISOString().slice(0, 16) : '')
-        setFormDisplayEnd(menu.display_period_end ? new Date(menu.display_period_end).toISOString().slice(0, 16) : '')
+        // DBにはUTCで保存されているため、datetime-localが期待するローカル時刻の
+        // 壁時計表現に変換する（toISOStringだとUTCのまま表示され、時差分ずれる）
+        setFormDisplayStart(toDatetimeLocalValue(menu.display_period_start))
+        setFormDisplayEnd(toDatetimeLocalValue(menu.display_period_end))
         // Find linked tag
         const linkedTag = tags.find(t => t.linked_rich_menu_id === menu.id)
         setFormTargetTagId(linkedTag ? linkedTag.id : '')
