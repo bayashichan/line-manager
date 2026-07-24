@@ -720,7 +720,11 @@ export default function FormsPage() {
 
             {/* 回答閲覧モーダル */}
             {viewingForm && (
-                <ResponsesModal form={viewingForm} onClose={() => setViewingForm(null)} />
+                <ResponsesModal
+                    form={viewingForm}
+                    onClose={() => setViewingForm(null)}
+                    onChanged={() => { if (currentChannelId) fetchData(currentChannelId) }}
+                />
             )}
         </div>
     )
@@ -735,9 +739,13 @@ interface FormResponseRow {
     created_at: string
 }
 
-function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) {
+function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () => void; onChanged?: () => void }) {
     const [responses, setResponses] = useState<FormResponseRow[]>([])
     const [loading, setLoading] = useState(true)
+    const [editing, setEditing] = useState<FormResponseRow | null>(null)
+    const [editValues, setEditValues] = useState<Record<string, string | string[]>>({})
+    const [savingEdit, setSavingEdit] = useState(false)
+    const [deletingId, setDeletingId] = useState<string | null>(null)
 
     useEffect(() => {
         const fetchResponses = async () => {
@@ -758,6 +766,55 @@ function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) 
         const val = r.answers[fieldId]
         if (val === undefined || val === null) return ''
         return Array.isArray(val) ? val.join('、') : String(val)
+    }
+
+    const startEdit = (r: FormResponseRow) => {
+        setEditValues({ ...r.answers })
+        setEditing(r)
+    }
+
+    const setEditValue = (fieldId: string, value: string | string[]) => {
+        setEditValues((prev) => ({ ...prev, [fieldId]: value }))
+    }
+
+    const toggleEditCheckbox = (fieldId: string, option: string) => {
+        setEditValues((prev) => {
+            const current = Array.isArray(prev[fieldId]) ? (prev[fieldId] as string[]) : []
+            const next = current.includes(option) ? current.filter((o) => o !== option) : [...current, option]
+            return { ...prev, [fieldId]: next }
+        })
+    }
+
+    const saveEdit = async () => {
+        if (!editing) return
+        setSavingEdit(true)
+        const supabase = createClient()
+        const { error } = await supabase
+            .from('form_responses')
+            .update({ answers: editValues })
+            .eq('id', editing.id)
+        setSavingEdit(false)
+        if (error) {
+            alert('更新に失敗しました')
+            return
+        }
+        setResponses((prev) => prev.map((r) => (r.id === editing.id ? { ...r, answers: editValues } : r)))
+        setEditing(null)
+        onChanged?.()
+    }
+
+    const deleteResponse = async (r: FormResponseRow) => {
+        if (!confirm('この回答を削除しますか？この操作は取り消せません。')) return
+        setDeletingId(r.id)
+        const supabase = createClient()
+        const { error } = await supabase.from('form_responses').delete().eq('id', r.id)
+        setDeletingId(null)
+        if (error) {
+            alert('削除に失敗しました')
+            return
+        }
+        setResponses((prev) => prev.filter((x) => x.id !== r.id))
+        onChanged?.()
     }
 
     const downloadCsv = () => {
@@ -818,6 +875,7 @@ function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) 
                                             {field.label}
                                         </th>
                                     ))}
+                                    <th className="text-right font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700 sticky right-0 bg-slate-100 dark:bg-slate-800">操作</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -829,6 +887,28 @@ function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) 
                                                 {cellValue(r, field.id)}
                                             </td>
                                         ))}
+                                        <td className={cn(
+                                            'px-3 py-2 align-top whitespace-nowrap text-right sticky right-0',
+                                            i % 2 === 1 ? 'bg-slate-50 dark:bg-slate-800/40' : 'bg-white dark:bg-slate-900'
+                                        )}>
+                                            <div className="flex items-center justify-end gap-1">
+                                                <button
+                                                    onClick={() => startEdit(r)}
+                                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded"
+                                                    title="編集"
+                                                >
+                                                    <Pencil className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => deleteResponse(r)}
+                                                    disabled={deletingId === r.id}
+                                                    className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded disabled:opacity-50"
+                                                    title="削除"
+                                                >
+                                                    {deletingId === r.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -836,6 +916,112 @@ function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) 
                     )}
                 </div>
             </Card>
+
+            {/* 回答の編集ダイアログ */}
+            {editing && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => !savingEdit && setEditing(null)}>
+                    <Card className="w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4">
+                            <CardTitle className="text-lg">回答を編集</CardTitle>
+                            <button onClick={() => !savingEdit && setEditing(null)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </CardHeader>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                            <p className="text-xs text-slate-400">{formatDateTime(editing.created_at)} の回答</p>
+                            {form.fields.map((field) => (
+                                <div key={field.id} className="space-y-1.5">
+                                    <Label className="text-sm">{field.label}</Label>
+                                    <ResponseEditField
+                                        field={field}
+                                        value={editValues[field.id]}
+                                        onChange={(v) => setEditValue(field.id, v)}
+                                        onToggleCheckbox={(opt) => toggleEditCheckbox(field.id, opt)}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex-none flex justify-end gap-2 p-4 border-t">
+                            <Button variant="outline" onClick={() => setEditing(null)} disabled={savingEdit}>キャンセル</Button>
+                            <Button onClick={saveEdit} disabled={savingEdit} className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white">
+                                {savingEdit ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />保存中...</> : '保存する'}
+                            </Button>
+                        </div>
+                    </Card>
+                </div>
+            )}
         </div>
     )
+}
+
+// =============================================================================
+// 回答編集用の入力コンポーネント
+// =============================================================================
+function ResponseEditField({
+    field,
+    value,
+    onChange,
+    onToggleCheckbox,
+}: {
+    field: FormField
+    value: string | string[] | undefined
+    onChange: (v: string) => void
+    onToggleCheckbox: (option: string) => void
+}) {
+    const base = 'w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500'
+
+    switch (field.type) {
+        case 'textarea':
+            return (
+                <textarea
+                    className={`${base} min-h-[80px] resize-y`}
+                    value={(value as string) || ''}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+            )
+        case 'select':
+            return (
+                <select className={base} value={(value as string) || ''} onChange={(e) => onChange(e.target.value)}>
+                    <option value="">選択してください</option>
+                    {(field.options || []).map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                </select>
+            )
+        case 'radio':
+            return (
+                <div className="space-y-1.5">
+                    {(field.options || []).map((opt) => (
+                        <label key={opt} className="flex items-center gap-2 cursor-pointer text-sm">
+                            <input type="radio" name={`edit-${field.id}`} checked={value === opt} onChange={() => onChange(opt)} className="w-4 h-4 accent-emerald-600" />
+                            {opt}
+                        </label>
+                    ))}
+                </div>
+            )
+        case 'checkbox':
+            return (
+                <div className="space-y-1.5">
+                    {(field.options || []).map((opt) => {
+                        const checked = Array.isArray(value) && value.includes(opt)
+                        return (
+                            <label key={opt} className="flex items-center gap-2 cursor-pointer text-sm">
+                                <input type="checkbox" checked={checked} onChange={() => onToggleCheckbox(opt)} className="w-4 h-4 accent-emerald-600" />
+                                {opt}
+                            </label>
+                        )
+                    })}
+                </div>
+            )
+        default: {
+            const inputType =
+                field.type === 'email' ? 'email' :
+                field.type === 'tel' ? 'tel' :
+                field.type === 'number' ? 'number' :
+                field.type === 'date' ? 'date' : 'text'
+            return (
+                <Input type={inputType} value={(value as string) || ''} onChange={(e) => onChange(e.target.value)} />
+            )
+        }
+    }
 }
