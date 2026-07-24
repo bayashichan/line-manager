@@ -175,6 +175,54 @@ export interface StepExecution {
 }
 
 // =============================================================================
+// 申込フォーム
+// =============================================================================
+
+export type FormFieldType =
+    | 'text'
+    | 'textarea'
+    | 'email'
+    | 'tel'
+    | 'number'
+    | 'date'
+    | 'select'
+    | 'radio'
+    | 'checkbox'
+
+export interface FormField {
+    id: string
+    label: string
+    type: FormFieldType
+    required: boolean
+    placeholder?: string
+    options?: string[] // select / radio / checkbox 用
+}
+
+export interface Form {
+    id: string
+    channel_id: string
+    name: string
+    title: string | null
+    description: string | null
+    fields: FormField[]
+    completion_message: MessageContent[] // 完了時の自動返信（テキスト/画像）
+    completion_tag_ids: string[] | null
+    is_active: boolean
+    created_at: string
+    updated_at: string
+}
+
+export interface FormResponse {
+    id: string
+    form_id: string
+    channel_id: string
+    line_user_id: string | null
+    line_user_id_raw: string | null
+    answers: Record<string, string | string[]>
+    created_at: string
+}
+
+// =============================================================================
 // リレーション付き型
 // =============================================================================
 

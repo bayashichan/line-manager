@@ -23,6 +23,7 @@ import {
     UserPlus,
     History,
     Loader2,
+    ClipboardList,
 } from 'lucide-react'
 
 interface DashboardLayoutProps {
@@ -37,6 +38,7 @@ const navigation = [
     { name: 'リッチメニュー', href: '/dashboard/rich-menus', icon: LayoutGrid },
     { name: 'メッセージ配信', href: '/dashboard/messages', icon: Send },
     { name: 'ステップ配信', href: '/dashboard/step', icon: Layers },
+    { name: '申込フォーム', href: '/dashboard/forms', icon: ClipboardList },
     { name: 'チーム', href: '/dashboard/team', icon: UserPlus },
     { name: '操作ログ', href: '/dashboard/logs', icon: History },
     { name: '設定', href: '/dashboard/settings', icon: Settings },
