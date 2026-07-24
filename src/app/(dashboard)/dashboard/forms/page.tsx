@@ -22,6 +22,7 @@ import {
     Pencil,
     Eye,
     Link as LinkIcon,
+    Download,
 } from 'lucide-react'
 
 // 完了メッセージ用ブロック（テキスト/画像）
@@ -726,10 +727,16 @@ export default function FormsPage() {
 }
 
 // =============================================================================
-// 回答閲覧モーダル
+// 回答閲覧モーダル（テーブル表示＋CSVダウンロード）
 // =============================================================================
+interface FormResponseRow {
+    id: string
+    answers: Record<string, string | string[]>
+    created_at: string
+}
+
 function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) {
-    const [responses, setResponses] = useState<{ id: string; answers: Record<string, string | string[]>; created_at: string }[]>([])
+    const [responses, setResponses] = useState<FormResponseRow[]>([])
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
@@ -740,47 +747,92 @@ function ResponsesModal({ form, onClose }: { form: Form; onClose: () => void }) 
                 .select('id, answers, created_at')
                 .eq('form_id', form.id)
                 .order('created_at', { ascending: false })
-                .limit(200)
-            setResponses((data as { id: string; answers: Record<string, string | string[]>; created_at: string }[]) || [])
+                .limit(1000)
+            setResponses((data as FormResponseRow[]) || [])
             setLoading(false)
         }
         fetchResponses()
     }, [form.id])
 
-    const labelFor = (fieldId: string) => form.fields.find((f) => f.id === fieldId)?.label || fieldId
+    const cellValue = (r: FormResponseRow, fieldId: string): string => {
+        const val = r.answers[fieldId]
+        if (val === undefined || val === null) return ''
+        return Array.isArray(val) ? val.join('、') : String(val)
+    }
+
+    const downloadCsv = () => {
+        const escape = (v: string) => {
+            const s = v ?? ''
+            return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+        }
+        const headers = ['送信日時', ...form.fields.map((f) => f.label)]
+        const rows = responses.map((r) => [
+            formatDateTime(r.created_at),
+            ...form.fields.map((f) => cellValue(r, f.id)),
+        ])
+        const csv = [headers, ...rows].map((row) => row.map(escape).join(',')).join('\r\n')
+        // Excelでの文字化け防止のためUTF-8 BOMを付与
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${form.name}_回答_${new Date().toISOString().slice(0, 10)}.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+    }
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <Card className="w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
-                <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4">
-                    <CardTitle className="text-lg">「{form.name}」の回答（{responses.length}件）</CardTitle>
-                    <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">
-                        <X className="w-5 h-5" />
-                    </button>
+            <Card className="w-full max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
+                <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4 gap-3">
+                    <CardTitle className="text-lg truncate">「{form.name}」の回答（{responses.length}件）</CardTitle>
+                    <div className="flex items-center gap-2 flex-none">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={downloadCsv}
+                            disabled={loading || responses.length === 0}
+                        >
+                            <Download className="w-4 h-4 mr-1" />
+                            CSVダウンロード
+                        </Button>
+                        <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
                 </CardHeader>
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div className="flex-1 overflow-auto">
                     {loading ? (
                         <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-emerald-500" /></div>
                     ) : responses.length === 0 ? (
                         <p className="text-center text-slate-500 py-8">まだ回答がありません</p>
                     ) : (
-                        responses.map((r) => (
-                            <div key={r.id} className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800 space-y-1.5">
-                                <p className="text-xs text-slate-400">{formatDateTime(r.created_at)}</p>
-                                {form.fields.map((field) => {
-                                    const val = r.answers[field.id]
-                                    if (val === undefined || val === null || (Array.isArray(val) && val.length === 0) || val === '') return null
-                                    return (
-                                        <div key={field.id} className="text-sm">
-                                            <span className="text-slate-500">{labelFor(field.id)}: </span>
-                                            <span className="text-slate-800 dark:text-slate-200 break-words">
-                                                {Array.isArray(val) ? val.join('、') : val}
-                                            </span>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-                        ))
+                        <table className="w-full text-sm border-collapse">
+                            <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
+                                <tr>
+                                    <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">送信日時</th>
+                                    {form.fields.map((field) => (
+                                        <th key={field.id} className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">
+                                            {field.label}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {responses.map((r, i) => (
+                                    <tr key={r.id} className={cn(i % 2 === 1 && 'bg-slate-50 dark:bg-slate-800/40')}>
+                                        <td className="px-3 py-2 whitespace-nowrap text-slate-500 align-top">{formatDateTime(r.created_at)}</td>
+                                        {form.fields.map((field) => (
+                                            <td key={field.id} className="px-3 py-2 align-top text-slate-800 dark:text-slate-200 max-w-xs break-words">
+                                                {cellValue(r, field.id)}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     )}
                 </div>
             </Card>

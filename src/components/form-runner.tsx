@@ -32,7 +32,6 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 return
             }
             try {
-                const liff = (await import('@line/liff')).default
                 const liffId = process.env.NEXT_PUBLIC_FORM_LIFF_ID
                 if (!liffId) {
                     setErrorMessage('フォームの設定が正しくありません（LIFF ID未設定）')
@@ -40,6 +39,20 @@ export function FormRunner({ formId }: { formId: string | null }) {
                     return
                 }
 
+                // フォーム定義の取得はLIFFのログイン/トークンに依存しないため、
+                // LIFF初期化と並行して先に走らせておく（読み込みの高速化）。
+                type FormFetchResult = { ok: boolean; data?: PublicForm; error?: string }
+                const formPromise: Promise<FormFetchResult> = fetch(`/api/forms/${formId}`)
+                    .then(async (res): Promise<FormFetchResult> => {
+                        if (!res.ok) {
+                            const body = await res.json().catch(() => ({}))
+                            return { ok: false, error: body.error || 'フォームを読み込めませんでした' }
+                        }
+                        return { ok: true, data: (await res.json()) as PublicForm }
+                    })
+                    .catch((): FormFetchResult => ({ ok: false, error: 'フォームの読み込みに失敗しました' }))
+
+                const liff = (await import('@line/liff')).default
                 await liff.init({ liffId })
 
                 if (!liff.isLoggedIn()) {
@@ -55,15 +68,13 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 }
                 setAccessToken(token)
 
-                const res = await fetch(`/api/forms/${formId}`)
-                if (!res.ok) {
-                    const data = await res.json().catch(() => ({}))
-                    setErrorMessage(data.error || 'フォームを読み込めませんでした')
+                const result = await formPromise
+                if (!result.ok || !result.data) {
+                    setErrorMessage(result.error || 'フォームを読み込めませんでした')
                     setStatus('error')
                     return
                 }
-                const data: PublicForm = await res.json()
-                setForm(data)
+                setForm(result.data)
                 setStatus('ready')
             } catch (err) {
                 console.error('フォーム初期化エラー:', err)
