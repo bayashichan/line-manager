@@ -189,11 +189,14 @@ async function verifyLineAccessToken(
         }
         if (!verifyData.expires_in || verifyData.expires_in <= 0) return null
 
-        // ログインチャンネルが指定されていれば一致を確認する（任意のハードニング）
+        // client_id は参考ログのみ（フォーム用LIFFのログインチャンネルは
+        // NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID と異なる場合があるため、ここでは弾かない）。
+        // 本人特定はトークン有効性 + /v2/profile のuserId取得で担保する。
         const expectedClientId = process.env.NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID
         if (expectedClientId && verifyData.client_id && verifyData.client_id !== expectedClientId) {
-            console.error('アクセストークンのclient_id不一致')
-            return null
+            console.warn(
+                `アクセストークンのclient_id(${verifyData.client_id})がNEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID(${expectedClientId})と異なります（処理は継続）`
+            )
         }
 
         const profileRes = await fetch('https://api.line.me/v2/profile', {
