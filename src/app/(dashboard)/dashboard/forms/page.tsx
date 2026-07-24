@@ -318,7 +318,7 @@ export default function FormsPage() {
     }
 
     const formUrl = (formId: string) =>
-        liffId ? `https://liff.line.me/${liffId}/${formId}` : ''
+        liffId ? `https://liff.line.me/${liffId}?form=${formId}` : ''
 
     const copyUrl = async (formId: string) => {
         const url = formUrl(formId)
