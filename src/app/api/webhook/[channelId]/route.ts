@@ -114,7 +114,13 @@ async function processEvent(
 
     switch (event.type) {
         case 'follow':
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true })
+            // 友だち追加日時は follow イベントの発生時刻を採用する（Webhook遅延や
+            // リトライで実際の追加時刻とズレないよう、サーバー時刻ではなくLINEの
+            // イベント時刻を使う）。
+            await handleFollow(supabase, lineClient, channel, userId, {
+                sendCapi: true,
+                followedAt: eventTimestampToIso(event.timestamp),
+            })
             break
         case 'unfollow':
             await handleUnfollow(supabase, channel.id, userId)
@@ -123,6 +129,9 @@ async function processEvent(
             // メッセージ受信時もユーザー情報を更新/作成する（既存の友だち対策）。
             // ただし Meta CAPI は friend追加イベントのみで発火させる。既存友だちの
             // メッセージで再発火させると Lead が重複計上される可能性があるため。
+            // followedAt も渡さない。渡すと既存の友だちの「友だち追加日時」が
+            // メッセージ受信日時で上書きされてしまう（最終メッセージ日時は
+            // last_message_at で別途管理している）。
             console.log('メッセージ受信:', event.message)
             await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false })
             // チャット履歴に保存
@@ -134,6 +143,15 @@ async function processEvent(
         default:
             console.log('未処理のイベント:', event.type)
     }
+}
+
+/**
+ * LINEイベントのtimestamp（ミリ秒）をISO文字列に変換する。
+ * 不正な値が来た場合は現在時刻にフォールバックする。
+ */
+function eventTimestampToIso(timestamp: number | undefined): string {
+    const date = new Date(timestamp ?? NaN)
+    return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
 }
 
 /**
@@ -166,13 +184,17 @@ async function fetchWithTimeout<T>(
  * - ユーザー保存（upsert）を最優先で確実に実行 → 友だち一覧に必ず表示
  * - プロフィール取得は3秒タイムアウト → LINE API遅延時も処理続行
  * - リッチメニュー/タグ付け/ステップ配信は非同期 → タイムアウト回避
+ *
+ * options.followedAt:
+ * - 指定時（follow イベント）… friend追加日時をその時刻で記録/更新する
+ * - 未指定時（message イベントなど）… 既存の友だち追加日時をそのまま維持する
  */
 async function handleFollow(
     supabase: ReturnType<typeof createAdminClient>,
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
     userId: string,
-    options: { sendCapi: boolean }
+    options: { sendCapi: boolean; followedAt?: string }
 ) {
     try {
         // ====================================================================
@@ -189,6 +211,9 @@ async function handleFollow(
         // STEP 2: ユーザー保存（upsert - これが最重要。ここだけは絶対に成功させる）
         // select + insert/update の2回を1回に統合し、処理時間を短縮
         // ====================================================================
+        // followed_at はキー自体を送らないことで「既存行では更新しない」を実現する。
+        // （upsert は payload に含めたカラムだけを ON CONFLICT DO UPDATE の対象にし、
+        //   含めなかったカラムは新規行のみ DEFAULT NOW() が入る）
         const { data: upsertedUser, error: upsertError } = await supabase
             .from('line_users')
             .upsert(
@@ -199,7 +224,7 @@ async function handleFollow(
                     picture_url: profile.pictureUrl,
                     status_message: profile.statusMessage,
                     is_blocked: false,
-                    followed_at: new Date().toISOString(),
+                    ...(options.followedAt ? { followed_at: options.followedAt } : {}),
                 },
                 {
                     onConflict: 'channel_id,line_user_id',
