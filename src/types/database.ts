@@ -230,6 +230,23 @@ export interface LineUserWithTags extends LineUser {
     tags: Tag[]
 }
 
+/**
+ * 外部の申込フォームから連携された申込者。
+ * is_friend が false = 申込は済んでいるが公式アカウントの友だちではない人。
+ */
+export interface Applicant {
+    id: string
+    channel_id: string
+    line_user_id: string
+    display_name: string | null
+    source: string
+    is_friend: boolean
+    linked_line_user_id: string | null
+    applied_at: string | null
+    created_at: string
+    updated_at: string
+}
+
 export interface ChannelWithMembers extends Channel {
     members: (ChannelMember & { profile: Profile })[]
 }
