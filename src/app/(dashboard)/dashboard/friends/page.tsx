@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { Button, Input, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getRelativeTime, getCookie } from '@/lib/utils'
 import type { LineUser, Tag } from '@/types'
@@ -26,6 +27,7 @@ import {
     Square,
     CheckSquare,
     Users,
+    UserX,
 } from 'lucide-react'
 import Papa from 'papaparse'
 
@@ -46,6 +48,13 @@ export default function FriendsPage() {
     const [showImportModal, setShowImportModal] = useState(false)
     const [showBatchStepModal, setShowBatchStepModal] = useState(false)
     const [scenarios, setScenarios] = useState<any[]>([])
+
+    // 表示対象（有効な友だち / ブロック中）
+    const [showBlocked, setShowBlocked] = useState(false)
+    const [activeCount, setActiveCount] = useState(0)
+    const [blockedCount, setBlockedCount] = useState(0)
+    const [listLoading, setListLoading] = useState(false)
+    const [loadError, setLoadError] = useState<string | null>(null)
 
     // 複数選択モード
     const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -86,25 +95,57 @@ export default function FriendsPage() {
         setLoading(false)
     }
 
-    const fetchData = async (channelId: string) => {
+    const fetchData = async (channelId: string, blockedView: boolean = showBlocked) => {
         const supabase = createClient()
 
-        const { data: friendsData } = await supabase
-            .from('line_users')
-            .select(`
+        setListLoading(true)
+        setLoadError(null)
+
+        // PostgRESTは1リクエストあたり既定1000行までしか返さないため、
+        // .range() でページングして全件取得する。
+        // ページ間で行が重複・欠落しないよう、id を第2ソートキーにして順序を一意にする。
+        const { data: friendsData, error: friendsError } = await fetchAllRows<LineUserWithTags>(
+            (from, to) =>
+                supabase
+                    .from('line_users')
+                    .select(`
         *,
         line_user_tags (
           tag_id,
           tags (*)
         )
       `)
-            .eq('channel_id', channelId)
-            .eq('is_blocked', false)
-            .order('followed_at', { ascending: false })
+                    .eq('channel_id', channelId)
+                    .eq('is_blocked', blockedView)
+                    .order('followed_at', { ascending: false })
+                    .order('id', { ascending: true })
+                    .range(from, to)
+        )
 
-        if (friendsData) {
-            setFriends(friendsData as LineUserWithTags[])
+        if (friendsError) {
+            console.error('友だち一覧の取得エラー:', friendsError)
+            setLoadError('友だち一覧の取得に失敗しました。時間をおいて再読み込みしてください。')
         }
+
+        setFriends(friendsData)
+        setListLoading(false)
+
+        // 有効 / ブロック中の件数（表示中の一覧とは別に、常に両方を数える）
+        const [activeResult, blockedResult] = await Promise.all([
+            supabase
+                .from('line_users')
+                .select('id', { count: 'exact', head: true })
+                .eq('channel_id', channelId)
+                .eq('is_blocked', false),
+            supabase
+                .from('line_users')
+                .select('id', { count: 'exact', head: true })
+                .eq('channel_id', channelId)
+                .eq('is_blocked', true),
+        ])
+
+        setActiveCount(activeResult.count ?? 0)
+        setBlockedCount(blockedResult.count ?? 0)
 
         const { data: tagsData } = await supabase
             .from('tags')
@@ -135,6 +176,16 @@ export default function FriendsPage() {
                 })
             }))
             setScenarios(sortedScenarios)
+        }
+    }
+
+    const handleViewChange = (blockedView: boolean) => {
+        if (blockedView === showBlocked) return
+        setShowBlocked(blockedView)
+        setIsSelectionMode(false)
+        setSelectedFriendIds(new Set())
+        if (currentChannelId) {
+            fetchData(currentChannelId, blockedView)
         }
     }
 
@@ -173,7 +224,7 @@ export default function FriendsPage() {
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `friends_${new Date().toISOString().split('T')[0]}.csv`
+        a.download = `friends${showBlocked ? '_blocked' : ''}_${new Date().toISOString().split('T')[0]}.csv`
         a.click()
     }
 
@@ -221,7 +272,11 @@ export default function FriendsPage() {
                         友だち管理
                     </h1>
                     <p className="text-slate-500 dark:text-slate-400 mt-1">
-                        {filteredFriends.length} / {friends.length} 人の友だち
+                        {filteredFriends.length} / {friends.length} 人
+                        {showBlocked ? 'のブロック中の友だち' : 'の友だち'}
+                        {listLoading && (
+                            <Loader2 className="inline w-3 h-3 ml-2 animate-spin text-slate-400" />
+                        )}
                         {isSelectionMode && selectedFriendIds.size > 0 && (
                             <span className="ml-2 text-emerald-600 dark:text-emerald-400 font-medium">
                                 （{selectedFriendIds.size}人選択中）
@@ -269,7 +324,8 @@ export default function FriendsPage() {
                             </Button>
                             <Button
                                 onClick={() => setShowBatchStepModal(true)}
-                                disabled={filteredFriends.length === 0}
+                                disabled={filteredFriends.length === 0 || showBlocked}
+                                title={showBlocked ? 'ブロック中の友だちには配信できません' : undefined}
                                 className="bg-blue-600 hover:bg-blue-700 text-white"
                             >
                                 <MessageCircle className="w-4 h-4 mr-2" />
@@ -280,8 +336,34 @@ export default function FriendsPage() {
                 </div>
             </div>
 
+            {loadError && (
+                <div className="flex items-center gap-2 px-4 py-3 rounded-md bg-red-50 text-red-700 text-sm dark:bg-red-900/20 dark:text-red-300">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    {loadError}
+                </div>
+            )}
+
             {/* フィルター */}
             <div className="flex flex-col gap-3">
+                {/* 表示対象の切替 */}
+                <div className="flex gap-2 flex-wrap">
+                    <Button
+                        variant={showBlocked ? 'outline' : 'default'}
+                        size="sm"
+                        onClick={() => handleViewChange(false)}
+                    >
+                        <Users className="w-4 h-4 mr-1" />
+                        有効な友だち（{activeCount}）
+                    </Button>
+                    <Button
+                        variant={showBlocked ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => handleViewChange(true)}
+                    >
+                        <UserX className="w-4 h-4 mr-1" />
+                        ブロック中（{blockedCount}）
+                    </Button>
+                </div>
                 <div className="flex gap-2">
                     <div className="relative flex-1">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -382,6 +464,11 @@ export default function FriendsPage() {
                                         <div className="flex items-center justify-between gap-2">
                                             <h3 className="font-medium truncate">
                                                 {friend.display_name || friend.internal_name || '名前なし'}
+                                                {friend.is_blocked && (
+                                                    <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300 align-middle">
+                                                        ブロック中
+                                                    </span>
+                                                )}
                                             </h3>
                                             {!isSelectionMode && (
                                                 <div className="p-1 rounded-full hover:bg-slate-100 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -432,11 +519,13 @@ export default function FriendsPage() {
                 })}
             </div>
 
-            {filteredFriends.length === 0 && (
+            {filteredFriends.length === 0 && !listLoading && (
                 <div className="text-center py-12 text-slate-500">
                     {searchQuery || selectedTagFilter
                         ? '検索条件に一致する友だちがいません'
-                        : '友だちがまだいません'}
+                        : showBlocked
+                            ? 'ブロック中の友だちはいません'
+                            : '友だちがまだいません'}
                 </div>
             )}
 
