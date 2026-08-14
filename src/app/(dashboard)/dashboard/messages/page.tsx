@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { resolveRecipients } from '@/lib/messaging/recipients'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Message, Tag, StepScenario } from '@/types'
@@ -98,41 +99,32 @@ export default function MessagesPage() {
 
         const calculateAudience = async () => {
             const supabase = createClient()
-            let query = supabase
-                .from('line_users')
-                .select('id', { count: 'exact', head: true })
-                .eq('channel_id', currentChannelId)
-                .eq('is_blocked', false)
 
-            if (formSelectedTags.length > 0) {
-                const { data: usersWithTags } = await supabase
-                    .from('line_user_tags')
-                    .select('line_user_id')
-                    .in('tag_id', formSelectedTags)
+            // タグ指定がない場合は件数だけを数える（全件取得より軽い）
+            if (formSelectedTags.length === 0 && formExcludeTags.length === 0) {
+                const { count } = await supabase
+                    .from('line_users')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('channel_id', currentChannelId)
+                    .eq('is_blocked', false)
 
-                if (usersWithTags && usersWithTags.length > 0) {
-                    const userIds = [...new Set(usersWithTags.map(u => u.line_user_id))]
-                    query = query.in('id', userIds)
-                } else {
-                    setProjectedCount(0)
-                    return
-                }
+                setProjectedCount(count || 0)
+                return
             }
 
-            if (formExcludeTags.length > 0) {
-                const { data: excludedUsers } = await supabase
-                    .from('line_user_tags')
-                    .select('line_user_id')
-                    .in('tag_id', formExcludeTags)
+            // タグで絞り込む場合は、実際の配信と同じロジックで数える
+            const { recipients, error } = await resolveRecipients(supabase, {
+                channelId: currentChannelId,
+                filterTags: formSelectedTags,
+                excludeTags: formExcludeTags,
+            })
 
-                if (excludedUsers && excludedUsers.length > 0) {
-                    const excludedUserIds = [...new Set(excludedUsers.map(u => u.line_user_id))]
-                    query = query.not('id', 'in', `(${excludedUserIds.join(',')})`)
-                }
+            if (error) {
+                console.error('配信対象数の計算エラー:', error)
+                return
             }
 
-            const { count } = await query
-            setProjectedCount(count || 0)
+            setProjectedCount(recipients.length)
         }
 
         calculateAudience()

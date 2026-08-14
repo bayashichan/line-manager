@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { chunk } from '@/lib/utils'
+import { resolveRecipients } from '@/lib/messaging/recipients'
 
 /**
  * メッセージ送信
@@ -38,44 +39,25 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'メッセージが見つかりません' }, { status: 404 })
         }
 
-        // 配信対象ユーザーを取得
-        let query = adminClient
-            .from('line_users')
-            .select('id, line_user_id')
-            .eq('channel_id', message.channel_id)
-            .eq('is_blocked', false)
+        // 配信対象ユーザーを取得（1000件上限を避けるため全件ページング取得）
+        const { recipients, error: recipientsError } = await resolveRecipients(adminClient, {
+            channelId: message.channel_id,
+            filterTags: message.filter_tags,
+            excludeTags: message.exclude_tags,
+        })
 
-        // タグフィルターがある場合
-        if (message.filter_tags && message.filter_tags.length > 0) {
-            const { data: filteredUsers } = await adminClient
-                .from('line_user_tags')
-                .select('line_user_id')
-                .in('tag_id', message.filter_tags)
+        // 対象の取得に失敗したまま送ると、一部にしか届かない/除外が効かない事故になるため中断する
+        if (recipientsError) {
+            console.error('配信対象の取得エラー:', recipientsError)
+            await adminClient
+                .from('messages')
+                .update({ status: 'failed' })
+                .eq('id', messageId)
 
-            if (filteredUsers && filteredUsers.length > 0) {
-                const userIds = [...new Set(filteredUsers.map(u => u.line_user_id))]
-                query = query.in('id', userIds)
-            } else {
-                return NextResponse.json({ success: true, sent: 0 })
-            }
+            return NextResponse.json({ error: '配信対象の取得に失敗しました' }, { status: 500 })
         }
 
-        // タグ除外がある場合
-        if (message.exclude_tags && message.exclude_tags.length > 0) {
-            const { data: excludedUsers } = await adminClient
-                .from('line_user_tags')
-                .select('line_user_id')
-                .in('tag_id', message.exclude_tags)
-
-            if (excludedUsers && excludedUsers.length > 0) {
-                const excludedUserIds = [...new Set(excludedUsers.map(u => u.line_user_id))]
-                query = query.not('id', 'in', `(${excludedUserIds.join(',')})`)
-            }
-        }
-
-        const { data: recipients } = await query
-
-        if (!recipients || recipients.length === 0) {
+        if (recipients.length === 0) {
             await adminClient
                 .from('messages')
                 .update({
@@ -163,14 +145,8 @@ export async function POST(request: NextRequest) {
 
         if (hasNamePlaceholder) {
             // 個別送信モード（プッシュメッセージ）
-            // 名前を取得するために再度クエリを実行（recipientsにはid, line_user_idしか含まれていない可能性があるため）
-            // ※ 元のクエリでdisplay_nameも取得していれば再クエリ不要だが、念のため安全策
-            const { data: usersWithProfile } = await adminClient
-                .from('line_users')
-                .select('line_user_id, display_name')
-                .in('line_user_id', lineUserIds)
-
-            const userMap = new Map(usersWithProfile?.map(u => [u.line_user_id, u.display_name]) || [])
+            // display_name は recipients に含まれているので再クエリしない
+            const userMap = new Map(recipients.map(r => [r.line_user_id, r.display_name]))
 
             // 10件ずつの並列処理で送信（レートリミット対策）
             const pushBatches = chunk(lineUserIds, 10)

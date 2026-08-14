@@ -114,7 +114,7 @@ async function processEvent(
 
     switch (event.type) {
         case 'follow':
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true })
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true, updateFollowedAt: true })
             break
         case 'unfollow':
             await handleUnfollow(supabase, channel.id, userId)
@@ -123,8 +123,10 @@ async function processEvent(
             // メッセージ受信時もユーザー情報を更新/作成する（既存の友だち対策）。
             // ただし Meta CAPI は friend追加イベントのみで発火させる。既存友だちの
             // メッセージで再発火させると Lead が重複計上される可能性があるため。
+            // followed_at も更新しない（メッセージのたびに友だち追加日時が
+            // 上書きされ、一覧の登録日・並び順が壊れるため）。
             console.log('メッセージ受信:', event.message)
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false })
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false })
             // チャット履歴に保存
             await handleMessage(supabase, channel.id, userId, event.message)
             break
@@ -172,7 +174,7 @@ async function handleFollow(
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
     userId: string,
-    options: { sendCapi: boolean }
+    options: { sendCapi: boolean; updateFollowedAt: boolean }
 ) {
     try {
         // ====================================================================
@@ -189,6 +191,8 @@ async function handleFollow(
         // STEP 2: ユーザー保存（upsert - これが最重要。ここだけは絶対に成功させる）
         // select + insert/update の2回を1回に統合し、処理時間を短縮
         // ====================================================================
+        // followed_at は follow イベント時のみ明示的に指定する。
+        // 未指定なら新規行は DB の DEFAULT NOW() が入り、既存行は元の値が保持される。
         const { data: upsertedUser, error: upsertError } = await supabase
             .from('line_users')
             .upsert(
@@ -199,7 +203,7 @@ async function handleFollow(
                     picture_url: profile.pictureUrl,
                     status_message: profile.statusMessage,
                     is_blocked: false,
-                    followed_at: new Date().toISOString(),
+                    ...(options.updateFollowedAt ? { followed_at: new Date().toISOString() } : {}),
                 },
                 {
                     onConflict: 'channel_id,line_user_id',

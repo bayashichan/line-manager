@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { chunk } from '@/lib/utils'
+import { resolveRecipients } from '@/lib/messaging/recipients'
 
 /**
  * 予約配信を処理するCronジョブ
@@ -59,29 +60,25 @@ export async function GET(request: NextRequest) {
 
                 const channel = message.channels as any
 
-                // 配信対象ユーザーを取得
-                let query = supabase
-                    .from('line_users')
-                    .select('id, line_user_id')
-                    .eq('channel_id', message.channel_id)
-                    .eq('is_blocked', false)
+                // 配信対象ユーザーを取得（1000件上限を避けるため全件ページング取得）
+                const { recipients, error: recipientsError } = await resolveRecipients(supabase, {
+                    channelId: message.channel_id,
+                    filterTags: message.filter_tags,
+                    excludeTags: message.exclude_tags,
+                })
 
-                // タグフィルターがある場合
-                if (message.filter_tags && message.filter_tags.length > 0) {
-                    const { data: filteredUsers } = await supabase
-                        .from('line_user_tags')
-                        .select('line_user_id')
-                        .in('tag_id', message.filter_tags)
+                // 対象の取得に失敗したまま送ると、一部にしか届かない/除外が効かない事故になるため中断する
+                if (recipientsError) {
+                    console.error(`メッセージ ${message.id} の配信対象取得エラー:`, recipientsError)
+                    await supabase
+                        .from('messages')
+                        .update({ status: 'failed' })
+                        .eq('id', message.id)
 
-                    if (filteredUsers) {
-                        const userIds = [...new Set(filteredUsers.map(u => u.line_user_id))]
-                        query = query.in('id', userIds)
-                    }
+                    continue
                 }
 
-                const { data: recipients } = await query
-
-                if (!recipients || recipients.length === 0) {
+                if (recipients.length === 0) {
                     await supabase
                         .from('messages')
                         .update({
