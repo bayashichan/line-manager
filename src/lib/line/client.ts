@@ -16,6 +16,24 @@ export function validateSignature(
     return hash === signature
 }
 
+export type LineProfile = {
+    userId: string
+    displayName: string
+    pictureUrl?: string
+    statusMessage?: string
+}
+
+/**
+ * 友だち判定の結果。
+ * - friend:     このチャネルの友だち（プロフィール取得成功）
+ * - not_friend: 友だちでない、またはブロック中
+ * - error:      判定できなかった（トークン不正・通信障害など）。友だちでないと断定してはいけない
+ */
+export type FriendCheckResult =
+    | { status: 'friend'; profile: LineProfile }
+    | { status: 'not_friend'; httpStatus: number }
+    | { status: 'error'; httpStatus: number; detail: string }
+
 /**
  * LINE Messaging API クライアント
  */
@@ -60,6 +78,37 @@ export class LineClient {
             pictureUrl?: string
             statusMessage?: string
         }>
+    }
+
+    /**
+     * 友だちかどうかを判定しつつプロフィールを取得する。
+     *
+     * GET /v2/bot/profile/{userId} は、そのチャネルの友だちでない場合や
+     * ブロック中の場合に 404 を返す。getProfile() は失敗を一律で例外にするため、
+     * 「非友だち」と「トークン不正・通信障害」を区別できない。
+     * 友だち判定の用途ではこちらを使うこと。
+     */
+    async getProfileForFriendCheck(userId: string): Promise<FriendCheckResult> {
+        let response: Response
+        try {
+            response = await this.request(`/profile/${userId}`)
+        } catch (err) {
+            return { status: 'error', httpStatus: 0, detail: String(err) }
+        }
+
+        if (response.ok) {
+            const profile = (await response.json()) as LineProfile
+            return { status: 'friend', profile }
+        }
+
+        // 404: 友だちでない or ブロック中 / 403: そのuserIdにアクセスする権限がない
+        if (response.status === 404 || response.status === 403) {
+            return { status: 'not_friend', httpStatus: response.status }
+        }
+
+        // 401(トークン不正)や5xxは「非友だち」ではないので区別する
+        const detail = await response.text().catch(() => '')
+        return { status: 'error', httpStatus: response.status, detail }
     }
 
     /**
