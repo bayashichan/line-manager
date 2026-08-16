@@ -14,12 +14,15 @@ import { LineClient } from '@/lib/line'
  * - displayName: LINE表示名（任意）
  * - source:      申込元の識別子（例: buchiiyashi-apply）
  * - appliedAt:   申込日時（ISO文字列、任意）
+ * - notify:      受付内容のLINE通知（任意）
+ *                { messages: LINEのメッセージオブジェクト配列(最大5) }
  *
  * 処理:
  *  1. Messaging API で「本当に友だちか」を判定する
  *     （LIFFのログインは認証であって友だち追加ではないため、userIdが取れても友だちとは限らない）
  *  2. 友だちなら line_users に upsert（Webhook取りこぼしの救済にもなる）
  *  3. 友だち・非友だちを問わず applicants に記録する
+ *  4. notify が指定されていて、かつ友だちなら push で通知する
  *
  * 呼び出しは必ずサーバー間で行うこと。シークレットをブラウザに渡してはいけない。
  */
@@ -41,6 +44,7 @@ export async function POST(request: NextRequest) {
         const displayName: string | null = body.displayName ?? null
         const source: string | undefined = body.source
         const appliedAt: string | null = body.appliedAt ?? null
+        const notifyMessages: unknown = body.notify?.messages
 
         if (!channelId || !lineUserId || !source) {
             return NextResponse.json(
@@ -135,11 +139,40 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: '申込者の保存に失敗しました' }, { status: 500 })
         }
 
+        // --------------------------------------------------------------------
+        // STEP 4: 受付内容をLINEで通知する（任意）
+        //
+        // 通知の失敗で申込連携そのものを失敗にはしない。申込の記録は既に済んでおり、
+        // 正規の通知手段はメール、LINEはその補助という位置づけのため。
+        // 未友だちには push できないので黙ってスキップする（LINEの仕様）。
+        // --------------------------------------------------------------------
+        let notified = false
+        let notifyError: string | null = null
+
+        if (notifyMessages !== undefined) {
+            if (!Array.isArray(notifyMessages) || notifyMessages.length === 0 || notifyMessages.length > 5) {
+                notifyError = 'notify.messages は1〜5件の配列で指定してください'
+                console.warn(`申込者通知をスキップ (${lineUserId}): ${notifyError}`)
+            } else if (!isFriend) {
+                notifyError = '未友だちのため送信できません'
+                console.log(`申込者通知をスキップ (${lineUserId}): ${notifyError}`)
+            } else {
+                try {
+                    await lineClient.pushMessage(lineUserId, notifyMessages as object[])
+                    notified = true
+                    console.log(`申込者通知を送信: ${lineUserId} (source: ${source})`)
+                } catch (error) {
+                    notifyError = error instanceof Error ? error.message : String(error)
+                    console.error(`申込者通知の送信に失敗 (${lineUserId}):`, error)
+                }
+            }
+        }
+
         console.log(
             `申込者連携: ${lineUserId} (source: ${source}) → ${isFriend ? '友だち' : '未友だち'}`
         )
 
-        return NextResponse.json({ success: true, isFriend })
+        return NextResponse.json({ success: true, isFriend, notified, notifyError })
     } catch (error) {
         console.error('申込者連携エラー:', error)
         return NextResponse.json({ error: '内部サーバーエラー' }, { status: 500 })
