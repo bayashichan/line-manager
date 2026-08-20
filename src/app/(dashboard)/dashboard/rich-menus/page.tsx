@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent, Textarea } from '@/components/ui'
 import { cn, getCookie } from '@/lib/utils'
 import type { RichMenu, RichMenuArea } from '@/types'
+import { isAreaConfigured } from '@/lib/rich-menu/areas'
 import {
     Plus,
     Edit2,
@@ -25,6 +26,7 @@ import {
     Calendar,
     Tag,
     Clock,
+    AlertTriangle,
 } from 'lucide-react'
 
 // Rich Menu Templates Definition
@@ -401,6 +403,26 @@ export default function RichMenusPage() {
     }
 
     const handleRegisterToLine = async (menuId: string) => {
+        // LINEは空のアクションを受け付けないため、登録前に未設定エリアを確認する
+        const target = richMenus.find(m => m.id === menuId)
+        const areas = target?.areas || []
+        const unsetAreaNumbers = areas
+            .map((area, index) => (isAreaConfigured(area) ? null : index + 1))
+            .filter((n): n is number => n !== null)
+
+        if (areas.length > 0 && unsetAreaNumbers.length === areas.length) {
+            alert('タップ領域のアクションが未入力です。\n編集画面で各エリアにメッセージ本文またはURLを入力し、保存してから登録してください。')
+            return
+        }
+
+        if (unsetAreaNumbers.length > 0) {
+            const ok = confirm(
+                `エリア ${unsetAreaNumbers.join(', ')} のアクションが未入力です。\n` +
+                'これらの領域はタップしても何も起こらない状態で登録されます。続行しますか？'
+            )
+            if (!ok) return
+        }
+
         setRegistering(menuId)
         try {
             const response = await fetch('/api/rich-menus/register', {
@@ -543,7 +565,11 @@ export default function RichMenusPage() {
     const updateArea = (index: number, field: string, value: any) => {
         const updated = [...formAreas]
         if (field === 'actionType') {
-            updated[index] = { ...updated[index], action: { type: value, text: '', uri: '' } }
+            // 種別に不要なプロパティ（messageなのにuri等）を残さない
+            updated[index] = {
+                ...updated[index],
+                action: value === 'uri' ? { type: 'uri', uri: '' } : { type: 'message', text: '' },
+            }
         } else if (field === 'actionValue') {
             const actionField = updated[index].action.type === 'uri' ? 'uri' : 'text'
             updated[index] = { ...updated[index], action: { ...updated[index].action, [actionField]: value } }
@@ -846,6 +872,12 @@ export default function RichMenusPage() {
                                                 {index + 1}
                                             </span>
                                             <span className="font-medium text-sm">アクション</span>
+                                            {!isAreaConfigured(area) && (
+                                                <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                                                    <AlertTriangle className="w-3 h-3" />
+                                                    未設定
+                                                </span>
+                                            )}
                                         </div>
                                         <button
                                             onClick={() => removeArea(index)}
