@@ -22,123 +22,21 @@ import {
     MousePointer,
     LayoutTemplate,
     Grid,
-    Square,
     Calendar,
     Tag,
     Clock,
     AlertTriangle,
 } from 'lucide-react'
 
-// Rich Menu Templates Definition
-const RICH_MENU_TEMPLATES = [
-    {
-        id: 'large_6',
-        name: '大: 6分割',
-        type: 'Large',
-        icon: <Grid className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 833, y: 0, width: 834, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 0, y: 843, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 833, y: 843, width: 834, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1667, y: 843, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'large_4',
-        name: '大: 4分割 (2x2)',
-        type: 'Large',
-        icon: <Grid className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1250, y: 0, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 0, y: 843, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1250, y: 843, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'large_3_upper1',
-        name: '大: 3分割 (上1・下2)',
-        type: 'Large',
-        icon: <LayoutTemplate className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 2500, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 0, y: 843, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1250, y: 843, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'large_3_left',
-        name: '大（左1 右2）',
-        type: 'Large',
-        icon: <LayoutTemplate className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 1250, height: 1686 }, action: { type: 'message', text: '' } }, // Left
-            { bounds: { x: 1250, y: 0, width: 1250, height: 843 }, action: { type: 'message', text: '' } }, // Right Top
-            { bounds: { x: 1250, y: 843, width: 1250, height: 843 }, action: { type: 'message', text: '' } }, // Right Bottom
-        ],
-    },
-    {
-        id: 'large_2_vertical',
-        name: '大（上下2分割）',
-        type: 'Large',
-        icon: <LayoutTemplate className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 2500, height: 843 }, action: { type: 'message', text: '' } }, // Top
-            { bounds: { x: 0, y: 843, width: 2500, height: 843 }, action: { type: 'message', text: '' } }, // Bottom
-        ],
-    },
-    {
-        id: 'large_2_horizontal',
-        name: '大（左右2分割）',
-        type: 'Large',
-        icon: <LayoutTemplate className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 1250, height: 1686 }, action: { type: 'message', text: '' } }, // Left
-            { bounds: { x: 1250, y: 0, width: 1250, height: 1686 }, action: { type: 'message', text: '' } }, // Right
-        ],
-    },
-    {
-        id: 'large_1',
-        name: '大: 全面 (1分割)',
-        type: 'Large',
-        icon: <Square className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 2500, height: 1686 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'small_3',
-        name: '小: 3分割',
-        type: 'Small',
-        icon: <Grid className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 833, y: 0, width: 834, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'small_2',
-        name: '小: 2分割',
-        type: 'Small',
-        icon: <Grid className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-            { bounds: { x: 1250, y: 0, width: 1250, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    },
-    {
-        id: 'small_1',
-        name: '小: 全面 (1分割)',
-        type: 'Small',
-        icon: <Square className="w-6 h-6" />,
-        areas: [
-            { bounds: { x: 0, y: 0, width: 2500, height: 843 }, action: { type: 'message', text: '' } },
-        ]
-    }
-]
+import {
+    MENU_WIDTH,
+    MENU_HEIGHT_LARGE,
+    MENU_HEIGHT_SMALL,
+    MIN_AREA_SIZE,
+    clamp,
+    buildAreasFromLayout,
+    rescaleAreas,
+} from '@/lib/rich-menu/layout'
 
 // UTC(ISO文字列)を datetime-local 用のローカル時刻文字列 (YYYY-MM-DDTHH:mm) に変換する。
 // toISOString() をそのまま使うとUTCの壁時計時刻になり、保存時のローカル時刻解釈と
@@ -172,10 +70,28 @@ export default function RichMenusPage() {
     const [formDisplayEnd, setFormDisplayEnd] = useState<string>('')
     const [formTargetTagId, setFormTargetTagId] = useState<string>('')
 
-    const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
+    // メニューの高さ（大: 1686 / 小: 843）。画像のリサイズ先とタップ領域の座標系を兼ねる
+    const [formMenuHeight, setFormMenuHeight] = useState<number>(MENU_HEIGHT_LARGE)
+    // 段ごとの分割数（例: [3, 3] = 上段3個・下段3個）
+    const [layoutRows, setLayoutRows] = useState<number[]>([3, 3])
     const [hoveredAreaIndex, setHoveredAreaIndex] = useState<number | null>(null) // ハイライト用
 
+    // プレビュー上のドラッグ操作
+    const [drag, setDrag] = useState<{
+        mode: 'create' | 'move' | 'resize'
+        index: number
+        startX: number
+        startY: number
+        origin: RichMenuArea['bounds']
+    } | null>(null)
+    const [draftBounds, setDraftBounds] = useState<RichMenuArea['bounds'] | null>(null)
+
     const fileInputRef = useRef<HTMLInputElement>(null)
+    const previewRef = useRef<HTMLDivElement>(null)
+    // メニューサイズ変更時に再リサイズするため、アップロード前の元画像を保持する
+    const originalImageFileRef = useRef<File | null>(null)
+    // プレビュー中の画像の実サイズ（幅2500に換算した高さ）
+    const [previewImageHeight, setPreviewImageHeight] = useState<number | null>(null)
 
     useEffect(() => {
         fetchChannelAndData()
@@ -244,7 +160,10 @@ export default function RichMenusPage() {
         setFormDisplayStart('')
         setFormDisplayEnd('')
         setFormTargetTagId('')
-        setSelectedTemplateId(null)
+        setFormMenuHeight(MENU_HEIGHT_LARGE)
+        setLayoutRows([3, 3])
+        setPreviewImageHeight(null)
+        originalImageFileRef.current = null
         setEditingMenu(null)
         setIsCreating(false)
     }
@@ -259,7 +178,13 @@ export default function RichMenusPage() {
         setFormName(menu.name)
         setFormImagePreview(menu.image_url)
         setFormIsDefault(menu.is_default)
-        setFormAreas(menu.areas || [])
+        const savedAreas = menu.areas || []
+        setFormAreas(savedAreas)
+        // 保存済みの座標からメニューの高さを推定（画像読み込み後に実サイズで上書きされる）
+        const maxBottom = savedAreas.reduce((max, a) => Math.max(max, a.bounds.y + a.bounds.height), 0)
+        setFormMenuHeight(maxBottom > 0 && maxBottom <= MENU_HEIGHT_SMALL ? MENU_HEIGHT_SMALL : MENU_HEIGHT_LARGE)
+        setPreviewImageHeight(null)
+        originalImageFileRef.current = null
         // Period
         // DBにはUTCで保存されているため、datetime-localが期待するローカル時刻の
         // 壁時計表現に変換する（toISOStringだとUTCのまま表示され、時差分ずれる）
@@ -269,16 +194,135 @@ export default function RichMenusPage() {
         const linkedTag = tags.find(t => t.linked_rich_menu_id === menu.id)
         setFormTargetTagId(linkedTag ? linkedTag.id : '')
 
-        setSelectedTemplateId(null) // 編集時はテンプレート選択状態をリセット（カスタム扱い）
         setIsCreating(false)
     }
 
-    const handleTemplateSelect = (templateId: string) => {
-        const template = RICH_MENU_TEMPLATES.find(t => t.id === templateId)
-        if (template) {
-            setSelectedTemplateId(templateId)
-            setFormAreas(JSON.parse(JSON.stringify(template.areas))) // Deep copy
+    /** 段構成からタップ領域を作り直す */
+    const applyLayout = () => {
+        const hasInput = formAreas.some(area => isAreaConfigured(area))
+        if (hasInput && !confirm('現在のタップ領域と入力済みのアクションは置き換えられます。よろしいですか？')) {
+            return
         }
+        setFormAreas(buildAreasFromLayout(layoutRows, formMenuHeight))
+    }
+
+    /** 段数を変更する（増えた段はデフォルト3分割） */
+    const changeRowCount = (count: number) => {
+        setLayoutRows(prev => Array.from({ length: count }, (_, i) => prev[i] ?? 3))
+    }
+
+    /** 特定の段の分割数を変更する */
+    const changeRowColumns = (rowIndex: number, cols: number) => {
+        setLayoutRows(prev => prev.map((c, i) => (i === rowIndex ? cols : c)))
+    }
+
+    /** メニューの高さ（大/小）を切り替える。タップ領域と画像を追従させる */
+    const changeMenuHeight = async (height: number) => {
+        if (height === formMenuHeight) return
+
+        setFormAreas(prev => rescaleAreas(prev, formMenuHeight, height))
+        setFormMenuHeight(height)
+
+        // アップロード済みの画像があれば新しいサイズに作り直す
+        // （画像とタップ領域の縦横比がずれると位置が合わなくなるため）
+        const original = originalImageFileRef.current
+        if (!original) return
+
+        try {
+            const resized = await resizeImage(original, MENU_WIDTH, height)
+            setFormImageFile(resized)
+            const reader = new FileReader()
+            reader.onloadend = () => setFormImagePreview(reader.result as string)
+            reader.readAsDataURL(resized)
+        } catch (err) {
+            console.error('Resize error:', err)
+        }
+    }
+
+    /** プレビュー上の座標をメニューの座標系（2500 x formMenuHeight）に変換する */
+    const toMenuPoint = (clientX: number, clientY: number) => {
+        const rect = previewRef.current?.getBoundingClientRect()
+        if (!rect || rect.width === 0 || rect.height === 0) return { x: 0, y: 0 }
+        return {
+            x: clamp(Math.round(((clientX - rect.left) / rect.width) * MENU_WIDTH), 0, MENU_WIDTH),
+            y: clamp(Math.round(((clientY - rect.top) / rect.height) * formMenuHeight), 0, formMenuHeight),
+        }
+    }
+
+    const startDrag = (
+        e: React.PointerEvent,
+        mode: 'create' | 'move' | 'resize',
+        index: number
+    ) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const point = toMenuPoint(e.clientX, e.clientY)
+        const origin = formAreas[index]?.bounds ?? { x: point.x, y: point.y, width: 0, height: 0 }
+        setDrag({ mode, index, startX: point.x, startY: point.y, origin })
+        if (mode === 'create') setDraftBounds({ x: point.x, y: point.y, width: 0, height: 0 })
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+    }
+
+    const handleDragMove = (e: React.PointerEvent) => {
+        if (!drag) return
+        const point = toMenuPoint(e.clientX, e.clientY)
+
+        if (drag.mode === 'create') {
+            setDraftBounds({
+                x: Math.min(drag.startX, point.x),
+                y: Math.min(drag.startY, point.y),
+                width: Math.abs(point.x - drag.startX),
+                height: Math.abs(point.y - drag.startY),
+            })
+            return
+        }
+
+        const dx = point.x - drag.startX
+        const dy = point.y - drag.startY
+
+        setFormAreas(prev => prev.map((area, i) => {
+            if (i !== drag.index) return area
+
+            if (drag.mode === 'move') {
+                return {
+                    ...area,
+                    bounds: {
+                        ...drag.origin,
+                        // メニューの外へはみ出さないよう移動量を制限する
+                        // （領域がメニューより大きい場合に負値にならないよう max(0, ...) を挟む）
+                        x: clamp(drag.origin.x + dx, 0, Math.max(0, MENU_WIDTH - drag.origin.width)),
+                        y: clamp(drag.origin.y + dy, 0, Math.max(0, formMenuHeight - drag.origin.height)),
+                    },
+                }
+            }
+
+            // 右下ハンドルでのリサイズ。メニュー内に残る範囲でのみ広げられる
+            const maxWidth = Math.max(1, MENU_WIDTH - drag.origin.x)
+            const maxHeight = Math.max(1, formMenuHeight - drag.origin.y)
+
+            return {
+                ...area,
+                bounds: {
+                    ...drag.origin,
+                    width: clamp(drag.origin.width + dx, Math.min(MIN_AREA_SIZE, maxWidth), maxWidth),
+                    height: clamp(drag.origin.height + dy, Math.min(MIN_AREA_SIZE, maxHeight), maxHeight),
+                },
+            }
+        }))
+    }
+
+    const endDrag = () => {
+        if (drag?.mode === 'create' && draftBounds) {
+            // 小さすぎるドラッグは誤操作とみなして無視する
+            if (draftBounds.width >= MIN_AREA_SIZE && draftBounds.height >= MIN_AREA_SIZE) {
+                setFormAreas(prev => [
+                    ...prev,
+                    { bounds: draftBounds, action: { type: 'message', text: '' } },
+                ])
+            }
+        }
+        setDrag(null)
+        setDraftBounds(null)
     }
 
 
@@ -531,15 +575,12 @@ export default function RichMenusPage() {
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]
         if (file) {
-            // ターゲットサイズを決定
-            const selectedTemplate = RICH_MENU_TEMPLATES.find(t => t.id === selectedTemplateId)
-            const isSmall = selectedTemplate?.type === 'Small'
-            const targetWidth = 2500
-            const targetHeight = isSmall ? 843 : 1686
+            originalImageFileRef.current = file
 
             try {
-                // 自動リサイズ
-                const resizedFile = await resizeImage(file, targetWidth, targetHeight)
+                // 選択中のメニューサイズに合わせて自動リサイズ
+                // （画像とタップ領域の座標系がずれると登録時にはみ出しエラーになるため）
+                const resizedFile = await resizeImage(file, MENU_WIDTH, formMenuHeight)
                 setFormImageFile(resizedFile)
 
                 // プレビュー表示
@@ -558,7 +599,15 @@ export default function RichMenusPage() {
     const addArea = () => {
         setFormAreas([
             ...formAreas,
-            { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: 'message', text: '' } },
+            {
+                bounds: {
+                    x: 0,
+                    y: 0,
+                    width: Math.round(MENU_WIDTH / 3),
+                    height: Math.round(formMenuHeight / 2),
+                },
+                action: { type: 'message', text: '' },
+            },
         ])
     }
 
@@ -576,7 +625,10 @@ export default function RichMenusPage() {
         } else {
             const [parent, child] = field.split('.')
             if (parent === 'bounds') {
-                updated[index] = { ...updated[index], bounds: { ...updated[index].bounds, [child]: parseInt(value) || 0 } }
+                // メニューの外へはみ出す値は入力できないようにする
+                const max = child === 'x' || child === 'width' ? MENU_WIDTH : formMenuHeight
+                const next = clamp(parseInt(value) || 0, 0, max)
+                updated[index] = { ...updated[index], bounds: { ...updated[index].bounds, [child]: next } }
             }
         }
         setFormAreas(updated)
@@ -629,42 +681,98 @@ export default function RichMenusPage() {
                             />
                         </div>
 
-                        {/* テンプレート選択 */}
-                        <div className="space-y-2">
+                        {/* レイアウト（段ごとの分割数）からタップ領域を作成 */}
+                        <div className="space-y-3">
                             <Label className="flex items-center gap-2">
                                 <LayoutTemplate className="w-4 h-4" />
-                                テンプレートから選択
+                                レイアウトから作成
                             </Label>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                {RICH_MENU_TEMPLATES.map(template => (
-                                    <button
-                                        key={template.id}
-                                        onClick={() => handleTemplateSelect(template.id)}
-                                        className={cn(
-                                            "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all",
-                                            selectedTemplateId === template.id
-                                                ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700"
-                                                : "border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600 bg-white dark:bg-slate-800"
-                                        )}
-                                    >
-                                        <div className="mb-2 p-2 bg-slate-100 dark:bg-slate-700 rounded-lg">
-                                            {template.icon}
+
+                            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl space-y-4 border border-slate-200 dark:border-slate-700">
+                                <div className="space-y-2">
+                                    <span className="text-xs font-medium text-slate-600 dark:text-slate-400">メニューの大きさ</span>
+                                    <div className="flex gap-2">
+                                        {[
+                                            { height: MENU_HEIGHT_LARGE, label: '大', hint: '2500 x 1686' },
+                                            { height: MENU_HEIGHT_SMALL, label: '小', hint: '2500 x 843' },
+                                        ].map(option => (
+                                            <button
+                                                key={option.height}
+                                                onClick={() => changeMenuHeight(option.height)}
+                                                className={cn(
+                                                    "flex-1 px-3 py-2 rounded-lg border-2 text-sm transition-all",
+                                                    formMenuHeight === option.height
+                                                        ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20"
+                                                        : "border-slate-200 hover:border-slate-300 bg-white dark:bg-slate-900 dark:border-slate-700"
+                                                )}
+                                            >
+                                                <span className="font-medium">{option.label}</span>
+                                                <span className="ml-2 text-[11px] text-slate-400">{option.hint}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <span className="text-xs font-medium text-slate-600 dark:text-slate-400">段数</span>
+                                    <div className="flex gap-2">
+                                        {[1, 2, 3].map(count => (
+                                            <button
+                                                key={count}
+                                                onClick={() => changeRowCount(count)}
+                                                className={cn(
+                                                    "flex-1 px-3 py-2 rounded-lg border-2 text-sm transition-all",
+                                                    layoutRows.length === count
+                                                        ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20"
+                                                        : "border-slate-200 hover:border-slate-300 bg-white dark:bg-slate-900 dark:border-slate-700"
+                                                )}
+                                            >
+                                                {count}段
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {layoutRows.map((cols, rowIndex) => (
+                                        <div key={rowIndex} className="flex items-center gap-3">
+                                            <span className="text-xs text-slate-600 dark:text-slate-400 w-16 shrink-0">
+                                                {layoutRows.length === 1
+                                                    ? '全体'
+                                                    : rowIndex === 0
+                                                        ? '上段'
+                                                        : rowIndex === layoutRows.length - 1
+                                                            ? '下段'
+                                                            : '中段'}
+                                            </span>
+                                            <div className="flex gap-1 flex-wrap">
+                                                {[1, 2, 3, 4, 5].map(n => (
+                                                    <button
+                                                        key={n}
+                                                        onClick={() => changeRowColumns(rowIndex, n)}
+                                                        className={cn(
+                                                            "w-10 h-9 rounded-lg border-2 text-sm transition-all",
+                                                            cols === n
+                                                                ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20"
+                                                                : "border-slate-200 hover:border-slate-300 bg-white dark:bg-slate-900 dark:border-slate-700"
+                                                        )}
+                                                    >
+                                                        {n}
+                                                    </button>
+                                                ))}
+                                                <span className="self-center text-xs text-slate-400 ml-1">個</span>
+                                            </div>
                                         </div>
-                                        <span className="text-xs font-medium text-center">{template.name}</span>
-                                        <span className="text-[10px] text-slate-400 mt-0.5">{template.type}</span>
-                                    </button>
-                                ))}
-                                <button
-                                    onClick={() => setSelectedTemplateId(null)}
-                                    className={cn(
-                                        "flex flex-col items-center justify-center p-3 rounded-xl border-2 border-dashed transition-all",
-                                        selectedTemplateId === null
-                                            ? "border-slate-400 bg-slate-50 dark:bg-slate-800"
-                                            : "border-slate-200 hover:border-slate-300"
-                                    )}
-                                >
-                                    <span className="text-xs font-medium">カスタム</span>
-                                </button>
+                                    ))}
+                                </div>
+
+                                <Button variant="outline" className="w-full" onClick={applyLayout}>
+                                    <Grid className="w-4 h-4 mr-2" />
+                                    この構成でタップ領域を作成
+                                </Button>
+                                <p className="text-xs text-slate-500">
+                                    押すと現在のタップ領域は置き換えられます。作成後はプレビュー上でドラッグして自由に調整できます。
+                                </p>
                             </div>
                         </div>
 
@@ -672,85 +780,114 @@ export default function RichMenusPage() {
                             <Label>メニュー画像</Label>
 
 
-                            {/* Visual Editor Area */}
-                            {(() => {
-                                const selectedTemplate = RICH_MENU_TEMPLATES.find(t => t.id === selectedTemplateId)
-                                // If template is selected, follow its type.
-                                // If not (custom or editing), infer from existing areas: if any area exceeds y=843, it must be Large.
-                                // Otherwise default to Large to be safe, or allow user switch.
-                                // For now, if no template selected, default to Large (1686).
-                                const isSmall = selectedTemplate?.type === 'Small'
-                                const baseHeight = isSmall ? 843 : 1686
+                            {/* ビジュアルエディタ（ドラッグでタップ領域を作成・移動・リサイズ） */}
+                            <div className="relative w-full max-w-2xl mx-auto border rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800">
+                                <div
+                                    ref={previewRef}
+                                    className="relative w-full touch-none select-none cursor-crosshair"
+                                    style={{ aspectRatio: `${MENU_WIDTH} / ${formMenuHeight}` }}
+                                    onPointerDown={(e) => startDrag(e, 'create', -1)}
+                                    onPointerMove={handleDragMove}
+                                    onPointerUp={endDrag}
+                                    onPointerCancel={endDrag}
+                                >
+                                    {formImagePreview ? (
+                                        <img
+                                            src={formImagePreview}
+                                            alt="プレビュー"
+                                            className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                                            onLoad={(e) => {
+                                                // 保存済み画像の実サイズからメニューの大きさを判定する
+                                                // （座標系と画像がずれると登録時にはみ出しエラーになる）
+                                                const img = e.currentTarget
+                                                if (!img.naturalWidth || !img.naturalHeight) return
+                                                const scaledHeight = Math.round((img.naturalHeight / img.naturalWidth) * MENU_WIDTH)
+                                                setPreviewImageHeight(scaledHeight)
+                                                const detected = scaledHeight < (MENU_HEIGHT_SMALL + MENU_HEIGHT_LARGE) / 2
+                                                    ? MENU_HEIGHT_SMALL
+                                                    : MENU_HEIGHT_LARGE
+                                                if (detected !== formMenuHeight) changeMenuHeight(detected)
+                                            }}
+                                        />
+                                    ) : (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 pointer-events-none">
+                                            <ImageIcon className="w-12 h-12 mb-2" />
+                                            <p className="text-sm">画像未設定</p>
+                                            <p className="text-xs opacity-70">
+                                                推奨: {MENU_WIDTH} x {formMenuHeight}
+                                            </p>
+                                        </div>
+                                    )}
 
-                                return (
-                                    <div className="relative w-full max-w-2xl mx-auto border rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800">
+                                    {formAreas.map((area, index) => (
                                         <div
+                                            key={index}
                                             className={cn(
-                                                "relative w-full",
-                                                isSmall ? "aspect-[2500/843]" : "aspect-[2500/1686]"
+                                                "absolute border-2 flex items-center justify-center text-xs font-bold text-white shadow-sm cursor-move",
+                                                hoveredAreaIndex === index
+                                                    ? "bg-emerald-500/50 border-emerald-400 z-10"
+                                                    : "bg-black/30 border-white/50 hover:bg-black/40"
                                             )}
+                                            style={{
+                                                left: `${(area.bounds.x / MENU_WIDTH) * 100}%`,
+                                                top: `${(area.bounds.y / formMenuHeight) * 100}%`,
+                                                width: `${(area.bounds.width / MENU_WIDTH) * 100}%`,
+                                                height: `${(area.bounds.height / formMenuHeight) * 100}%`,
+                                            }}
+                                            onMouseEnter={() => setHoveredAreaIndex(index)}
+                                            onMouseLeave={() => setHoveredAreaIndex(null)}
+                                            onPointerDown={(e) => startDrag(e, 'move', index)}
+                                            onPointerMove={handleDragMove}
+                                            onPointerUp={endDrag}
+                                            onPointerCancel={endDrag}
+                                            onDoubleClick={() => {
+                                                document.getElementById(`area-editor-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                                            }}
                                         >
-                                            {formImagePreview ? (
-                                                <img
-                                                    src={formImagePreview}
-                                                    alt="プレビュー"
-                                                    className="absolute inset-0 w-full h-full object-contain"
-                                                />
-                                            ) : (
-                                                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 pointer-events-none">
-                                                    <ImageIcon className="w-12 h-12 mb-2" />
-                                                    <p className="text-sm">画像未設定</p>
-                                                    <p className="text-xs opacity-70">
-                                                        {isSmall ? '推奨: 2500 x 843' : '推奨: 2500 x 1686'}
-                                                    </p>
-                                                </div>
-                                            )}
+                                            <span className="bg-black/50 px-2 py-1 rounded-full backdrop-blur-sm pointer-events-none">
+                                                {index + 1}
+                                            </span>
 
-                                            {/* Overlay Generator */}
-                                            {formAreas.map((area, index) => {
-                                                const left = (area.bounds.x / 2500) * 100
-                                                const top = (area.bounds.y / baseHeight) * 100
-                                                const width = (area.bounds.width / 2500) * 100
-                                                const height = (area.bounds.height / baseHeight) * 100
-
-                                                return (
-                                                    <div
-                                                        key={index}
-                                                        className={cn(
-                                                            "absolute border-2 flex items-center justify-center text-xs font-bold text-white shadow-sm transition-all cursor-pointer",
-                                                            hoveredAreaIndex === index
-                                                                ? "bg-emerald-500/50 border-emerald-400 z-10 scale-[1.01]"
-                                                                : "bg-black/30 border-white/50 hover:bg-black/40"
-                                                        )}
-                                                        style={{
-                                                            left: `${left}%`,
-                                                            top: `${top}%`,
-                                                            width: `${width}%`,
-                                                            height: `${height}%`,
-                                                        }}
-                                                        onMouseEnter={() => setHoveredAreaIndex(index)}
-                                                        onMouseLeave={() => setHoveredAreaIndex(null)}
-                                                        onClick={() => {
-                                                            document.getElementById(`area-editor-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                                                        }}
-                                                    >
-                                                        <span className="bg-black/50 px-2 py-1 rounded-full backdrop-blur-sm">
-                                                            {index + 1}
-                                                        </span>
-                                                    </div>
-                                                )
-                                            })}
+                                            {/* 右下のリサイズハンドル */}
+                                            <span
+                                                className="absolute right-0 bottom-0 w-4 h-4 rounded-sm bg-white border-2 border-emerald-500 cursor-nwse-resize"
+                                                onPointerDown={(e) => startDrag(e, 'resize', index)}
+                                                onPointerMove={handleDragMove}
+                                                onPointerUp={endDrag}
+                                                onPointerCancel={endDrag}
+                                            />
                                         </div>
+                                    ))}
 
+                                    {/* ドラッグ中の新規領域 */}
+                                    {draftBounds && (
                                         <div
-                                            onClick={() => fileInputRef.current?.click()}
-                                            className="absolute inset-0 w-full h-full opacity-0 hover:opacity-100 transition-opacity bg-black/10 cursor-pointer flex items-center justify-center group"
-                                            style={{ pointerEvents: 'none' }}
-                                        >
-                                        </div>
-                                    </div>
-                                )
-                            })()}
+                                            className="absolute border-2 border-dashed border-emerald-400 bg-emerald-500/30 pointer-events-none"
+                                            style={{
+                                                left: `${(draftBounds.x / MENU_WIDTH) * 100}%`,
+                                                top: `${(draftBounds.y / formMenuHeight) * 100}%`,
+                                                width: `${(draftBounds.width / MENU_WIDTH) * 100}%`,
+                                                height: `${(draftBounds.height / formMenuHeight) * 100}%`,
+                                            }}
+                                        />
+                                    )}
+                                </div>
+                            </div>
+
+                            {previewImageHeight !== null &&
+                                Math.abs(previewImageHeight - formMenuHeight) > 50 &&
+                                !originalImageFileRef.current && (
+                                    <p className="mt-2 flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+                                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                                        設定中のメニューサイズ（{MENU_WIDTH} x {formMenuHeight}）と画像の比率が異なります。
+                                        画像を選び直すか、メニューの大きさを戻してください。
+                                    </p>
+                                )}
+
+                            <p className="text-xs text-slate-500 mt-2 text-center">
+                                画像の上をドラッグすると新しいタップ領域を作成できます。枠内をドラッグで移動、右下の白い四角をドラッグでサイズ変更、ダブルクリックでアクション入力欄へ移動します。
+                            </p>
+
 
                             <Button
                                 variant="outline"

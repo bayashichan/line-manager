@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
-import { normalizeRichMenuAreas } from '@/lib/rich-menu/areas'
+import { fitAreasToSize, normalizeRichMenuAreas } from '@/lib/rich-menu/areas'
 import { resolveRichMenuSize } from '@/lib/rich-menu/image-size'
 import type { RichMenuArea } from '@/types'
 
@@ -87,27 +87,15 @@ export async function POST(request: NextRequest) {
             }
         ]
 
-        // タップ領域がメニュー枠からはみ出しているとLINE側で弾かれるため、先に検知する
-        const outOfBounds = richMenuAreas.filter(
-            area =>
-                area.bounds.x < 0 ||
-                area.bounds.y < 0 ||
-                area.bounds.x + area.bounds.width > size.width ||
-                area.bounds.y + area.bounds.height > size.height
-        )
-
-        if (outOfBounds.length > 0) {
-            return NextResponse.json({
-                error: `タップ領域がメニューのサイズ（${size.width}x${size.height}）からはみ出しています。座標・サイズを修正してください。`,
-            }, { status: 400 })
-        }
+        // 画像サイズと座標系が食い違っていても登録できるよう、枠内に収まるよう補正する
+        const fittedAreas = fitAreasToSize(richMenuAreas, size)
 
         const richMenuObject = {
             size,
             selected: true,
             name: richMenu.name,
             chatBarText: 'メニュー',
-            areas: richMenuAreas,
+            areas: fittedAreas,
         }
 
         // 2. リッチメニューを作成して画像をアップロード

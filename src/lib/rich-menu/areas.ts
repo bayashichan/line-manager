@@ -79,3 +79,41 @@ export function normalizeRichMenuAreas(areas: RichMenuArea[] | null | undefined)
 
     return { areas: normalized, skippedAreaNumbers }
 }
+
+/**
+ * タップ領域をメニューのサイズに収める。
+ *
+ * 画像のサイズ（＝メニューのサイズ）と、保存済みの座標が想定していたサイズが
+ * 食い違うと LINE 側で弾かれるため、はみ出している場合は比率を保ったまま縮小し、
+ * 端数は枠内にクランプする。
+ */
+export function fitAreasToSize(
+    areas: NormalizedRichMenuArea[],
+    size: { width: number; height: number }
+): NormalizedRichMenuArea[] {
+    if (areas.length === 0) return areas
+
+    const maxRight = Math.max(...areas.map(a => a.bounds.x + a.bounds.width))
+    const maxBottom = Math.max(...areas.map(a => a.bounds.y + a.bounds.height))
+
+    const scaleX = maxRight > size.width ? size.width / maxRight : 1
+    const scaleY = maxBottom > size.height ? size.height / maxBottom : 1
+
+    return areas.map(area => {
+        // 各辺を換算してから幅・高さを求める（幅や高さを直接丸めると隙間やはみ出しが出る）
+        const x = Math.min(Math.round(area.bounds.x * scaleX), size.width - 1)
+        const y = Math.min(Math.round(area.bounds.y * scaleY), size.height - 1)
+        const right = Math.min(Math.round((area.bounds.x + area.bounds.width) * scaleX), size.width)
+        const bottom = Math.min(Math.round((area.bounds.y + area.bounds.height) * scaleY), size.height)
+
+        return {
+            ...area,
+            bounds: {
+                x,
+                y,
+                width: Math.max(1, right - x),
+                height: Math.max(1, bottom - y),
+            },
+        }
+    })
+}
