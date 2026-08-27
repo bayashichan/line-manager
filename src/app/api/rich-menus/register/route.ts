@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { fitAreasToSize, normalizeRichMenuAreas } from '@/lib/rich-menu/areas'
-import { resolveRichMenuSize } from '@/lib/rich-menu/image-size'
+import {
+    RICH_MENU_MAX_IMAGE_BYTES,
+    detectImageMimeType,
+    isAllowedRichMenuSize,
+    readImageSize,
+} from '@/lib/rich-menu/image-size'
 import type { RichMenuArea } from '@/types'
 
 /**
@@ -76,8 +81,32 @@ export async function POST(request: NextRequest) {
         }
 
         const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
-        const contentType = imageResponse.headers.get('content-type') || 'image/png'
-        const size = resolveRichMenuSize(imageBuffer)
+
+        // Content-Type ヘッダーは信用せず、中身のマジックナンバーでフォーマットを判定する。
+        // ヘッダー（例: image/png）と中身（例: JPEG）が食い違ったままLINEに渡すと、
+        // iOSは中身を見て描画するがAndroidは宣言どおりデコードしようとして失敗し、
+        // リッチメニューが「読み込み中」のまま表示されなくなる。
+        const contentType = detectImageMimeType(imageBuffer)
+
+        if (!contentType) {
+            return NextResponse.json({
+                error: '画像がJPEG / PNGではありません。JPEGまたはPNGの画像を選び直して保存してから登録してください。',
+            }, { status: 400 })
+        }
+
+        if (imageBuffer.byteLength > RICH_MENU_MAX_IMAGE_BYTES) {
+            return NextResponse.json({
+                error: `画像のファイルサイズが${Math.round(imageBuffer.byteLength / 1024)}KBあり、LINEの上限（1MB）を超えています。画像を選び直して保存してください。`,
+            }, { status: 400 })
+        }
+
+        const size = readImageSize(imageBuffer)
+
+        if (!size || !isAllowedRichMenuSize(size)) {
+            return NextResponse.json({
+                error: '画像サイズがLINEの条件（幅800〜2500px・高さ250px以上・幅÷高さが1.45以上）を満たしていません。画像を選び直して保存してください。',
+            }, { status: 400 })
+        }
 
         // エリアが設定されていない場合はメニュー全体を1エリアとして扱う
         const richMenuAreas = normalizedAreas.length > 0 ? normalizedAreas : [
@@ -101,11 +130,18 @@ export async function POST(request: NextRequest) {
         // 2. リッチメニューを作成して画像をアップロード
         const { richMenuId: lineRichMenuId } = await lineClient.createRichMenu(richMenuObject)
 
-        await lineClient.uploadRichMenuImage(
-            lineRichMenuId,
-            new Blob([new Uint8Array(imageBuffer)], { type: contentType }),
-            contentType
-        )
+        try {
+            await lineClient.uploadRichMenuImage(
+                lineRichMenuId,
+                new Blob([new Uint8Array(imageBuffer)], { type: contentType }),
+                contentType
+            )
+        } catch (uploadError) {
+            // 画像なしのリッチメニューが残ると端末側で「読み込み中」のままになるため、
+            // アップロードに失敗した枠は作りっぱなしにせず消す
+            await lineClient.deleteRichMenu(lineRichMenuId).catch(() => { })
+            throw uploadError
+        }
 
         // 3. DBを更新
         await adminClient

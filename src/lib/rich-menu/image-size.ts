@@ -1,17 +1,17 @@
 /**
- * LINEが許可しているリッチメニューのサイズ
- * https://developers.line.biz/ja/reference/messaging-api/#rich-menu-size
+ * リッチメニュー画像に対するLINE側の制約
+ * https://developers.line.biz/ja/reference/messaging-api/#upload-rich-menu-image
+ *
+ * - フォーマット: JPEG または PNG
+ * - 幅: 800〜2500px / 高さ: 250px以上 / アスペクト比(幅÷高さ): 1.45以上
+ * - ファイルサイズ: 1MB以下
  */
-const ALLOWED_SIZES = [
-    { width: 2500, height: 1686 },
-    { width: 2500, height: 843 },
-    { width: 1200, height: 810 },
-    { width: 1200, height: 405 },
-    { width: 800, height: 540 },
-    { width: 800, height: 270 },
-]
+const MIN_WIDTH = 800
+const MAX_WIDTH = 2500
+const MIN_HEIGHT = 250
+const MIN_ASPECT_RATIO = 1.45
 
-export const DEFAULT_RICH_MENU_SIZE = { width: 2500, height: 1686 }
+export const RICH_MENU_MAX_IMAGE_BYTES = 1024 * 1024
 
 /**
  * PNG / JPEG のバイナリから画像サイズを読み取る。
@@ -59,14 +59,37 @@ export function readImageSize(buffer: Buffer): { width: number; height: number }
 }
 
 /**
- * 画像サイズからリッチメニューのサイズを決める。
- * LINEはリッチメニューのサイズと画像のサイズが一致していないと登録できないため、
- * 許可サイズに一致した場合のみ採用し、それ以外は従来通り 2500x1686 とする。
+ * PNG / JPEG のバイナリから実際のフォーマットを判定する。
+ *
+ * Content-Type ヘッダーではなく中身のマジックナンバーで判定するのが重要。
+ * ヘッダーと中身が食い違ったままLINEにアップロードすると、
+ * iOSは中身を見て描画できるがAndroidは宣言されたフォーマットで
+ * デコードしようとして失敗し、リッチメニューが「読み込み中」のままになる。
  */
-export function resolveRichMenuSize(buffer: Buffer): { width: number; height: number } {
-    const size = readImageSize(buffer)
-    if (!size) return DEFAULT_RICH_MENU_SIZE
+export function detectImageMimeType(buffer: Buffer): 'image/png' | 'image/jpeg' | null {
+    if (
+        buffer.length >= 8 &&
+        buffer.readUInt32BE(0) === 0x89504e47 &&
+        buffer.readUInt32BE(4) === 0x0d0a1a0a
+    ) {
+        return 'image/png'
+    }
 
-    const matched = ALLOWED_SIZES.find(s => s.width === size.width && s.height === size.height)
-    return matched || DEFAULT_RICH_MENU_SIZE
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        return 'image/jpeg'
+    }
+
+    return null
+}
+
+/**
+ * LINEがリッチメニューとして受け付けるサイズかどうか
+ */
+export function isAllowedRichMenuSize(size: { width: number; height: number }): boolean {
+    return (
+        size.width >= MIN_WIDTH &&
+        size.width <= MAX_WIDTH &&
+        size.height >= MIN_HEIGHT &&
+        size.width / size.height >= MIN_ASPECT_RATIO
+    )
 }

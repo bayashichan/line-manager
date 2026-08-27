@@ -68,7 +68,10 @@ export async function POST(request: NextRequest) {
 
         // 画像アップロード
         if (imageFile) {
-            const fileExt = imageFile.name.split('.').pop()
+            // 拡張子はファイル名ではなく実際のContent-Typeから決める。
+            // 中身と食い違ったままLINEに転送するとAndroidで描画できなくなる
+            const contentType = imageFile.type === 'image/png' ? 'image/png' : 'image/jpeg'
+            const fileExt = contentType === 'image/png' ? 'png' : 'jpg'
             const fileName = `${Date.now()}.${fileExt}`
             const filePath = `rich-menus/${channelId}/${fileName}`
 
@@ -78,7 +81,7 @@ export async function POST(request: NextRequest) {
             const { error: uploadError } = await supabase.storage
                 .from('line-assets')
                 .upload(filePath, buffer, {
-                    contentType: imageFile.type,
+                    contentType,
                 })
 
             if (!uploadError) {
