@@ -337,13 +337,16 @@ export default function RichMenusPage() {
             let imageUrl = editingMenu?.image_url || null
 
             if (formImageFile) {
-                const fileExt = formImageFile.name.split('.').pop()
+                // 拡張子とContent-Typeは実際の中身（JPEG）に合わせる。
+                // ずれるとLINEへ誤ったContent-Typeで転送され、Androidで描画できなくなる
+                const contentType = formImageFile.type || 'image/jpeg'
+                const fileExt = contentType === 'image/png' ? 'png' : 'jpg'
                 const fileName = `${Date.now()}.${fileExt}`
                 const filePath = `rich-menus/${currentChannelId}/${fileName}`
 
                 const { error: uploadError } = await supabase.storage
                     .from('line-assets')
-                    .upload(filePath, formImageFile)
+                    .upload(filePath, formImageFile, { contentType })
 
                 if (!uploadError) {
                     const { data: { publicUrl } } = supabase.storage
@@ -511,6 +514,26 @@ export default function RichMenusPage() {
         setRegistering(null)
     }
 
+    // LINEのリッチメニュー画像は1MBまで。超えるとアップロード時に413で弾かれる
+    const MAX_IMAGE_BYTES = 1024 * 1024
+
+    /** canvasをJPEGで書き出す。1MBに収まるまで品質を落とす */
+    const canvasToJpegBlob = async (canvas: HTMLCanvasElement): Promise<Blob> => {
+        const toBlob = (quality: number) =>
+            new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+
+        let last: Blob | null = null
+        for (const quality of [0.9, 0.8, 0.7, 0.6, 0.5]) {
+            const blob = await toBlob(quality)
+            if (!blob) continue
+            last = blob
+            if (blob.size <= MAX_IMAGE_BYTES) return blob
+        }
+
+        if (!last) throw new Error('Canvas blob failure')
+        return last
+    }
+
     // 画像を指定サイズにリサイズする関数
     const resizeImage = (file: File, width: number, height: number): Promise<File> => {
         return new Promise((resolve, reject) => {
@@ -521,7 +544,7 @@ export default function RichMenusPage() {
                 img.src = e.target?.result as string
             }
 
-            img.onload = () => {
+            img.onload = async () => {
                 const canvas = document.createElement('canvas')
                 canvas.width = width
                 canvas.height = height
@@ -536,36 +559,23 @@ export default function RichMenusPage() {
                 ctx.fillStyle = '#FFFFFF'
                 ctx.fillRect(0, 0, width, height)
 
-                // アスペクト比を維持して中央に描画するか、引き伸ばすか
-                // ここではLINEのリッチメニューの性質上、全体を埋める（引き伸ばし/切り取り）が望ましいが
-                // ユーザーの画像を勝手に切るとクレームになるため、フィットさせる (contain)
-                // ただし、LINEは「余白」を許さない（透過不可）なので、余白は白になる。
-
-                // 単純な引き伸ばし(fill)だと画像が歪む。
-                // drawImage(img, 0, 0, width, height) -> 歪む
-
-                // ここでは「歪んでもいいから埋める」か「余白あり」か迷うが、
-                // リッチメニュー作成ツールとしては「歪まない」のが正義。
-                // 描画領域を計算
-                const scale = Math.max(width / img.width, height / img.height)
-                const x = (width / 2) - (img.width / 2) * scale
-                const y = (height / 2) - (img.height / 2) * scale
-
-                // ctx.drawImage(img, x, y, img.width * scale, img.height * scale)
-                // いや、これだとカバー(cover)になる。はみ出る。
-
-                // とりあえず単純にリサイズ（歪むが一番確実）させる。
-                // こだわるユーザーは自分で2500x1686を作ってくるはず。
+                // 余白が出ると座標系と画像がずれるため、歪んでも枠いっぱいに描画する
                 ctx.drawImage(img, 0, 0, width, height)
 
-                canvas.toBlob((blob) => {
-                    if (blob) {
-                        const resizedFile = new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() })
-                        resolve(resizedFile)
-                    } else {
-                        reject(new Error('Canvas blob failure'))
-                    }
-                }, 'image/jpeg', 0.9)
+                try {
+                    const blob = await canvasToJpegBlob(canvas)
+
+                    // 中身はJPEGなので拡張子もJPEGに揃える。
+                    // 拡張子と中身が食い違うとストレージに誤ったContent-Typeで保存され、
+                    // Androidのリッチメニューが「読み込み中」のまま表示されなくなる
+                    const baseName = file.name.replace(/\.[^.]+$/, '') || 'rich-menu'
+                    resolve(new File([blob], `${baseName}.jpg`, {
+                        type: 'image/jpeg',
+                        lastModified: Date.now(),
+                    }))
+                } catch (err) {
+                    reject(err)
+                }
             }
 
             reader.readAsDataURL(file)

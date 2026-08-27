@@ -218,7 +218,11 @@ export class LineClient {
             body: imageBlob,
         })
         if (!response.ok) {
-            throw new Error(`リッチメニュー画像アップロードに失敗: ${response.status}`)
+            // 413（1MB超）やフォーマット不正の切り分けができるようレスポンス本文も残す
+            const detail = await response.text().catch(() => '')
+            throw new Error(
+                `リッチメニュー画像アップロードに失敗: ${response.status}${detail ? ` ${detail}` : ''}`
+            )
         }
     }
 
