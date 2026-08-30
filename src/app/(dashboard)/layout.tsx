@@ -25,6 +25,7 @@ import {
     History,
     Loader2,
     ClipboardList,
+    MessageSquareReply,
 } from 'lucide-react'
 
 interface DashboardLayoutProps {
@@ -35,6 +36,7 @@ const navigation = [
     { name: 'ダッシュボード', href: '/dashboard', icon: LayoutGrid },
     { name: '友だち管理', href: '/dashboard/friends', icon: Users },
     { name: '1:1チャット', href: '/dashboard/chats', icon: MessageCircle },
+    { name: '自動応答', href: '/dashboard/auto-replies', icon: MessageSquareReply },
     { name: 'タグ管理', href: '/dashboard/tags', icon: Tag },
     { name: 'リッチメニュー', href: '/dashboard/rich-menus', icon: LayoutGrid },
     { name: 'メッセージ配信', href: '/dashboard/messages', icon: Send },
