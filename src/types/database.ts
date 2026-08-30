@@ -223,6 +223,31 @@ export interface FormResponse {
 }
 
 // =============================================================================
+// キーワード自動応答
+// =============================================================================
+
+export type AutoReplyMatchType = 'exact' | 'partial'
+
+/**
+ * キーワード自動応答の定義。
+ *
+ * 送信は Messaging API の応答（Reply）APIで行う。応答メッセージはLINEの
+ * メッセージ通数にカウントされないため、この機能での返信は送信枠を消費しない。
+ */
+export interface AutoReply {
+    id: string
+    channel_id: string
+    name: string
+    keywords: string[]
+    match_type: AutoReplyMatchType
+    content: MessageContent[]
+    priority: number
+    is_active: boolean
+    created_at: string
+    updated_at: string
+}
+
+// =============================================================================
 // リレーション付き型
 // =============================================================================
 

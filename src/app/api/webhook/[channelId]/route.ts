@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Client } from '@upstash/qstash'
 import { createAdminClient } from '@/lib/supabase/server'
-import { validateSignature, LineClient } from '@/lib/line'
+import { validateSignature, LineClient, findMatchingAutoReply, personalizeContent } from '@/lib/line'
+import type { AutoReply } from '@/types'
 import { calculateNextSendAt } from '@/lib/utils'
 import type { Channel } from '@/types'
 import { sendMetaCapiEvent } from '@/lib/meta-capi'
@@ -120,12 +121,17 @@ async function processEvent(
             await handleUnfollow(supabase, channel.id, userId)
             break
         case 'message':
+            console.log('メッセージ受信:', event.message)
+            // 自動応答を最優先で処理する。
+            // replyTokenは短時間で失効するため、プロフィール取得(最大3秒)やQStash発行を
+            // 含む handleFollow より必ず先に返信すること。順序を入れ替えると応答APIが
+            // 使えなくなり、課金対象のプッシュに頼らざるを得なくなる。
+            await handleAutoReply(supabase, lineClient, channel.id, userId, event.message, event.replyToken)
             // メッセージ受信時もユーザー情報を更新/作成する（既存の友だち対策）。
             // ただし Meta CAPI は friend追加イベントのみで発火させる。既存友だちの
             // メッセージで再発火させると Lead が重複計上される可能性があるため。
             // followed_at も更新しない（メッセージのたびに友だち追加日時が
             // 上書きされ、一覧の登録日・並び順が壊れるため）。
-            console.log('メッセージ受信:', event.message)
             await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false })
             // チャット履歴に保存
             await handleMessage(supabase, channel.id, userId, event.message)
@@ -467,7 +473,79 @@ id,
 }
 
 /**
- * メッセージ受信イベント処理
+ * キーワード自動応答
+ *
+ * 応答（Reply）APIで返信する。応答メッセージはLINEのメッセージ通数に
+ * カウントされないため、この返信は送信枠を消費しない。
+ *
+ * 【重要】replyMessageが失敗してもpushMessageにフォールバックしないこと。
+ * フォールバックすると気付かないうちに課金対象の送信が発生し、
+ * この機能の目的（送信枠ゼロでの自動応答）が崩れる。
+ */
+async function handleAutoReply(
+    supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
+    channelId: string,
+    lineUserId: string,
+    message: WebhookEvent['message'],
+    replyToken: string | undefined
+) {
+    // 応答APIはreplyTokenが必須。テキスト以外はキーワード判定できないので対象外。
+    if (!replyToken) return
+    if (!message || message.type !== 'text' || !message.text) return
+
+    try {
+        const { data: rules, error } = await supabase
+            .from('auto_replies')
+            .select('*')
+            .eq('channel_id', channelId)
+            .eq('is_active', true)
+
+        if (error) {
+            console.error('自動応答ルール取得エラー:', error)
+            return
+        }
+        if (!rules || rules.length === 0) return
+
+        const rule = findMatchingAutoReply(rules as AutoReply[], message.text)
+        if (!rule) return
+
+        // 表示名は {name} 置換にしか使わないので、取得できなくても応答は続行する
+        const { data: user } = await supabase
+            .from('line_users')
+            .select('id, display_name')
+            .eq('channel_id', channelId)
+            .eq('line_user_id', lineUserId)
+            .single()
+
+        const content = personalizeContent(rule.content, user?.display_name)
+
+        await lineClient.replyMessage(replyToken, content)
+        console.log(`自動応答送信: ${rule.name} -> ${lineUserId}（送信枠の消費なし）`)
+
+        // 1:1チャット画面にも履歴として残す。
+        // chat_messages.sender は CHECK (sender IN ('user','admin')) のため 'admin' を使う。
+        if (user) {
+            const inserts = content.map((block) => ({
+                channel_id: channelId,
+                line_user_id: user.id,
+                sender: 'admin',
+                content_type: block.type,
+                content: block,
+            }))
+            const { error: logError } = await supabase.from('chat_messages').insert(inserts)
+            if (logError) {
+                console.error('自動応答の履歴保存エラー:', logError)
+            }
+        }
+    } catch (err) {
+        // 応答に失敗しても友だち登録やチャット履歴の保存は続行させる
+        console.error(`自動応答エラー (userId: ${lineUserId}):`, err)
+    }
+}
+
+/**
+ * メッセージイベント処理
  */
 async function handleMessage(
     supabase: ReturnType<typeof createAdminClient>,
