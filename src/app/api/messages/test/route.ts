@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
+import {
+    LineClient,
+    LineContentError,
+    buildLineMessages,
+    replaceNamePlaceholder,
+    toErrorMessage,
+} from '@/lib/line'
 
 /**
  * テスト送信
  * POST /api/messages/test
+ *
+ * 本番の一斉配信と同じ変換（buildLineMessages）を使う。
+ * ここで通れば本番でもLINEに弾かれない、という状態にしておくためのエンドポイント。
+ *
+ * 注: アクションのうちタグ付与・ステップ配信・自動返信はpostbackで動くため、
+ * 保存前のテスト送信ではタップしても反応しない（mid=TEST_SEND のダミーを送る）。
+ * URL遷移はテスト送信でもそのまま動作する。
  */
 export async function POST(request: NextRequest) {
     try {
@@ -34,67 +47,17 @@ export async function POST(request: NextRequest) {
 
         const lineClient = new LineClient(channel.channel_access_token)
 
-        // ダミーのmessageId (Postback動作用) - テスト送信なので保存済みIDがない場合があるが
-        // アクション動作確認のためには本当は保存が必要だが、ここではUUIDなどを仮発行するか、
-        // そもそもテスト送信ではアクションの完全な検証（DB連携部分）は難しいことを許容するか。
-        // Postbackアクションは mid を送ってくるので、それがDBにないと handlePostback が失敗する可能性がある。
-        // ただし、handlePostback は mid を使って replyText などを再取得するロジックになっている。
-
-        // 改善策: content 内に customActions がある場合、それをそのまま使うロジックにするか？
-        // 現状の handlePostback は DB からメッセージを取得している。
-        // テスト送信でアクションも試したい場合、一時的にDraftとして保存するなどの工夫がいるが、
-        // 今回は「送信機能」のテストに主眼を置き、アクション動作はDB依存であることを留意する。
-        // もしくは、Postback data に全データを入れる？（長すぎる）
-
-        // とりあえず、Flex Messageへの変換ロジックを実装。
-        // mid は 'TEST_SEND' とする。
-
-        const processedContent = content.map((block: any) => {
-            if (block.type === 'image' && block.customActions) {
-                // リッチメッセージ（Flex Message Image）
-                const action = block.customActions.redirectUrl
-                    ? {
-                        type: 'uri',
-                        uri: block.customActions.redirectUrl
-                    }
-                    : {
-                        type: 'postback',
-                        // テスト送信ではDBに保存しないため、アクションはサーバー側で失敗する可能性が高い
-                        // ユーザーにはそれを周知するか、あるいはテスト送信を「自分宛に保存して送信」にするか。
-                        // ここでは、一旦アクション定義通りのJSONを送る。
-                        data: `action=custom&mid=TEST_SEND`
-                    }
-
-                return {
-                    type: 'flex',
-                    altText: '画像メッセージ',
-                    contents: {
-                        type: 'bubble',
-                        body: {
-                            type: 'box',
-                            layout: 'vertical',
-                            contents: [
-                                {
-                                    type: 'image',
-                                    url: block.originalContentUrl,
-                                    size: 'full',
-                                    aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
-                                    aspectMode: 'cover',
-                                    action: action
-                                }
-                            ],
-                            paddingAll: '0px'
-                        }
-                    }
-                }
+        let lineMessages: object[]
+        try {
+            lineMessages = buildLineMessages(content, {
+                postbackData: 'action=custom&mid=TEST_SEND',
+            })
+        } catch (err) {
+            if (err instanceof LineContentError) {
+                return NextResponse.json({ error: err.message }, { status: 400 })
             }
-            return {
-                type: block.type,
-                text: block.text,
-                originalContentUrl: block.originalContentUrl,
-                previewImageUrl: block.previewImageUrl,
-            }
-        })
+            throw err
+        }
 
         // テスト送信先のユーザー情報を取得（名前置換用）
         const { data: testUser } = await supabase
@@ -104,27 +67,18 @@ export async function POST(request: NextRequest) {
             .eq('line_user_id', userId)
             .single()
 
-        const displayName = testUser?.display_name || '友だち'
-
-        // {name}の置換処理
-        const personalizedContent = processedContent.map((block: any) => {
-            if (block.type === 'text' && block.text) {
-                return {
-                    ...block,
-                    text: block.text.replace(/{name}/g, displayName)
-                }
-            }
-            return block
-        })
-
-        await lineClient.pushMessage(userId, personalizedContent)
+        await lineClient.pushMessage(
+            userId,
+            replaceNamePlaceholder(lineMessages, testUser?.display_name)
+        )
 
         return NextResponse.json({ success: true })
 
     } catch (error) {
         console.error('テスト送信エラー:', error)
+        // LINEが返したエラー本文をそのまま返す（原因が分からないと直しようがないため）
         return NextResponse.json(
-            { error: 'メッセージ送信に失敗しました' },
+            { error: `メッセージ送信に失敗しました: ${toErrorMessage(error, 500)}` },
             { status: 500 }
         )
     }

@@ -112,6 +112,8 @@ export interface Message {
     total_recipients: number
     success_count: number
     failure_count: number
+    /** 配信失敗時の理由（LINE APIのエラー本文など） */
+    error_message?: string | null
     created_at: string
     updated_at: string
 }
@@ -123,6 +125,10 @@ export interface MessageContent {
     previewImageUrl?: string
     altText?: string
     contents?: object // Flex Message
+    /** 画像の横縦比（width / height）。Flex Messageのアスペクト比に変換して使う */
+    aspectRatio?: number
+    /** 旧仕様: 画像タップ時に開くURL */
+    linkUrl?: string
     customActions?: {
         tagIds?: string[]
         scenarioId?: string

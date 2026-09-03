@@ -298,6 +298,7 @@ CREATE TABLE messages (
     total_recipients INT DEFAULT 0,
     success_count INT DEFAULT 0,
     failure_count INT DEFAULT 0,
+    error_message TEXT, -- 配信失敗時の理由（LINE APIのエラー本文など）
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );

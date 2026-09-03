@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
+import {
+    LineClient,
+    LineContentError,
+    buildLineMessages,
+    hasNamePlaceholder,
+    replaceNamePlaceholder,
+    toErrorMessage,
+} from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
 
@@ -60,6 +67,27 @@ export async function GET(request: NextRequest) {
 
                 const channel = message.channels as any
 
+                // コンテンツの変換（アクション付き画像はFlex Messageになる）
+                // 変換せずに送るとタップアクションが失われるうえ、管理画面用のフィールドが
+                // そのままLINEに渡ってリクエストごと弾かれる
+                let lineMessages: object[]
+                try {
+                    lineMessages = buildLineMessages(message.content, {
+                        postbackData: `action=custom&mid=${message.id}`,
+                    })
+                } catch (err) {
+                    if (err instanceof LineContentError) {
+                        console.error(`メッセージ ${message.id} の配信内容が不正です:`, err.message)
+                        await supabase
+                            .from('messages')
+                            .update({ status: 'failed', error_message: err.message })
+                            .eq('id', message.id)
+
+                        continue
+                    }
+                    throw err
+                }
+
                 // 配信対象ユーザーを取得（1000件上限を避けるため全件ページング取得）
                 const { recipients, error: recipientsError } = await resolveRecipients(supabase, {
                     channelId: message.channel_id,
@@ -72,7 +100,7 @@ export async function GET(request: NextRequest) {
                     console.error(`メッセージ ${message.id} の配信対象取得エラー:`, recipientsError)
                     await supabase
                         .from('messages')
-                        .update({ status: 'failed' })
+                        .update({ status: 'failed', error_message: '配信対象の取得に失敗しました' })
                         .eq('id', message.id)
 
                     continue
@@ -86,6 +114,7 @@ export async function GET(request: NextRequest) {
                             total_recipients: 0,
                             success_count: 0,
                             failure_count: 0,
+                            error_message: null,
                             sent_at: now,
                         })
                         .eq('id', message.id)
@@ -103,14 +132,44 @@ export async function GET(request: NextRequest) {
 
                 let successCount = 0
                 let failureCount = 0
+                let firstError: string | null = null
 
-                for (const batch of batches) {
-                    try {
-                        await lineClient.multicast(batch, message.content as object[])
-                        successCount += batch.length
-                    } catch (err) {
-                        console.error('配信エラー:', err)
-                        failureCount += batch.length
+                const recordError = (error: unknown) => {
+                    if (!firstError) {
+                        firstError = toErrorMessage(error)
+                    }
+                }
+
+                if (hasNamePlaceholder(lineMessages)) {
+                    // {name} を含む場合は個別送信（マルチキャストでは置換できない）
+                    const userMap = new Map(recipients.map(r => [r.line_user_id, r.display_name]))
+                    const pushBatches = chunk(lineUserIds, 10)
+
+                    for (const batch of pushBatches) {
+                        await Promise.all(batch.map(async (userId) => {
+                            try {
+                                await lineClient.pushMessage(
+                                    userId,
+                                    replaceNamePlaceholder(lineMessages, userMap.get(userId))
+                                )
+                                successCount++
+                            } catch (err) {
+                                console.error(`個別送信エラー (${userId}):`, err)
+                                recordError(err)
+                                failureCount++
+                            }
+                        }))
+                    }
+                } else {
+                    for (const batch of batches) {
+                        try {
+                            await lineClient.multicast(batch, lineMessages)
+                            successCount += batch.length
+                        } catch (err) {
+                            console.error('配信エラー:', err)
+                            recordError(err)
+                            failureCount += batch.length
+                        }
                     }
                 }
 
@@ -122,6 +181,7 @@ export async function GET(request: NextRequest) {
                         total_recipients: recipients.length,
                         success_count: successCount,
                         failure_count: failureCount,
+                        error_message: firstError,
                         sent_at: now,
                     })
                     .eq('id', message.id)
@@ -132,7 +192,7 @@ export async function GET(request: NextRequest) {
 
                 await supabase
                     .from('messages')
-                    .update({ status: 'failed' })
+                    .update({ status: 'failed', error_message: toErrorMessage(err) })
                     .eq('id', message.id)
             }
         }

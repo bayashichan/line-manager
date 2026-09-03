@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
+import {
+    LineClient,
+    LineContentError,
+    buildLineMessages,
+    hasNamePlaceholder,
+    replaceNamePlaceholder,
+    toErrorMessage,
+} from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
 
@@ -52,8 +59,27 @@ async function handler(request: NextRequest) {
             .update({ status: 'sending' })
             .eq('id', messageId)
 
+        // 2. コンテンツの変換（アクション付き画像はFlex Messageになる）
+        //    不正な内容は送る前に弾き、理由を配信履歴に残す
+        let lineMessages: object[]
+        try {
+            lineMessages = buildLineMessages(message.content, {
+                postbackData: `action=custom&mid=${messageId}`,
+            })
+        } catch (err) {
+            if (err instanceof LineContentError) {
+                console.error('QStash Webhook: 配信内容が不正です', err.message)
+                await adminClient
+                    .from('messages')
+                    .update({ status: 'failed', error_message: err.message })
+                    .eq('id', messageId)
 
-        // 2. 配信対象ユーザーの取得（1000件上限を避けるため全件ページング取得）
+                return NextResponse.json({ error: err.message }, { status: 400 })
+            }
+            throw err
+        }
+
+        // 3. 配信対象ユーザーの取得（1000件上限を避けるため全件ページング取得）
         const { recipients, error: recipientsError } = await resolveRecipients(adminClient, {
             channelId: message.channel_id,
             filterTags: message.filter_tags,
@@ -66,19 +92,19 @@ async function handler(request: NextRequest) {
             console.error('QStash Webhook: 配信対象の取得エラー', recipientsError)
             await adminClient
                 .from('messages')
-                .update({ status: 'failed' })
+                .update({ status: 'failed', error_message: '配信対象の取得に失敗しました' })
                 .eq('id', messageId)
 
             return NextResponse.json({ error: '配信対象の取得に失敗しました' }, { status: 500 })
         }
 
         if (recipients.length === 0) {
-            await completeMessage(adminClient, messageId, 0, 0, 0)
+            await completeMessage(adminClient, messageId, 0, 0, 0, null)
             return NextResponse.json({ success: true, sent: 0 })
         }
 
 
-        // 3. LINE APIで送信
+        // 4. LINE APIで送信
         const channel = message.channels as any
         const lineClient = new LineClient(channel.channel_access_token)
 
@@ -87,54 +113,15 @@ async function handler(request: NextRequest) {
 
         let successCount = 0
         let failureCount = 0
+        let firstError: string | null = null
 
-        // コンテンツの変換
-        const processedContent = (message.content as any[]).map((block: any) => {
-            if (block.type === 'image' && (block.customActions || block.linkUrl)) {
-                let action: any
-
-                if (block.customActions) {
-                    if (block.customActions.redirectUrl) {
-                        action = { type: 'uri', uri: block.customActions.redirectUrl }
-                    } else {
-                        action = { type: 'postback', data: `action=custom&mid=${messageId}` }
-                    }
-                } else if (block.linkUrl) {
-                    action = { type: 'uri', uri: block.linkUrl }
-                }
-
-                return {
-                    type: 'flex',
-                    altText: '画像メッセージ',
-                    contents: {
-                        type: 'bubble',
-                        body: {
-                            type: 'box',
-                            layout: 'vertical',
-                            contents: [
-                                {
-                                    type: 'image',
-                                    url: block.originalContentUrl,
-                                    size: 'full',
-                                    aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
-                                    aspectMode: 'cover',
-                                    action: action
-                                }
-                            ],
-                            paddingAll: '0px'
-                        }
-                    }
-                }
+        const recordError = (error: unknown) => {
+            if (!firstError) {
+                firstError = toErrorMessage(error)
             }
-            return block
-        })
+        }
 
-        // {name} プレースホルダーの存在確認
-        const hasNamePlaceholder = processedContent.some((block: any) =>
-            (block.type === 'text' && block.text?.includes('{name}'))
-        )
-
-        if (hasNamePlaceholder) {
+        if (hasNamePlaceholder(lineMessages)) {
             // 個別送信モード（display_name は recipients に含まれているので再クエリしない）
             const userMap = new Map(recipients.map(r => [r.line_user_id, r.display_name]))
             const pushBatches = chunk(lineUserIds, 10)
@@ -142,20 +129,15 @@ async function handler(request: NextRequest) {
             for (const batch of pushBatches) {
                 await Promise.all(batch.map(async (userId) => {
                     try {
-                        const displayName = userMap.get(userId) || '友だち'
-                        const personalizedContent = processedContent.map((block: any) => {
-                            if (block.type === 'text') {
-                                return {
-                                    ...block,
-                                    text: block.text.replace(/{name}/g, displayName)
-                                }
-                            }
-                            return block
-                        })
+                        const personalizedContent = replaceNamePlaceholder(
+                            lineMessages,
+                            userMap.get(userId)
+                        )
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
                     } catch (error) {
                         console.error(`個別送信エラー (${userId}):`, error)
+                        recordError(error)
                         failureCount++
                     }
                 }))
@@ -164,17 +146,18 @@ async function handler(request: NextRequest) {
             // 一斉送信モード
             for (const batch of batches) {
                 try {
-                    await lineClient.multicast(batch, processedContent)
+                    await lineClient.multicast(batch, lineMessages)
                     successCount += batch.length
                 } catch (error) {
                     console.error('配信エラー:', error)
+                    recordError(error)
                     failureCount += batch.length
                 }
             }
         }
 
-        // 4. ステータス更新と完了
-        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount)
+        // 5. ステータス更新と完了
+        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount, firstError)
 
         return NextResponse.json({ success: true, successCount, failureCount })
 
@@ -185,16 +168,24 @@ async function handler(request: NextRequest) {
 }
 
 // 完了時のDB更新ヘルパー
-async function completeMessage(adminClient: any, messageId: string, total: number, success: number, failure: number) {
+// 全員に届かなかった場合は sent にしない（予約配信が失敗しても成功に見えてしまうため）
+async function completeMessage(
+    adminClient: any,
+    messageId: string,
+    total: number,
+    success: number,
+    failure: number,
+    errorMessage: string | null
+) {
     await adminClient
         .from('messages')
         .update({
-            status: 'sent',
+            status: total > 0 && failure === total ? 'failed' : 'sent',
             total_recipients: total,
             success_count: success,
             failure_count: failure,
+            error_message: errorMessage,
             sent_at: new Date().toISOString(),
         })
         .eq('id', messageId)
 }
-
