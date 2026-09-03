@@ -87,6 +87,8 @@ export interface LineUser {
     is_blocked: boolean
     current_rich_menu_id: string | null
     followed_at: string
+    /** 最後にトークを開いたと推定できる日時（みなし既読の基準） */
+    last_read_at?: string | null
     created_at: string
     updated_at: string
 }
@@ -144,6 +146,35 @@ export interface MessageRecipient {
     status: 'pending' | 'sent' | 'failed'
     error_message: string | null
     sent_at: string | null
+    /**
+     * みなし既読の日時。LINEは既読を通知しないため、配信後に友だちから反応
+     * （返信・ボタン操作・リンクタップ）があった時点でセットされる。
+     * null は「読んでいない」ではなく「反応が確認できていない」を意味する。
+     */
+    read_at?: string | null
+    /** 既読と判断した根拠: message | postback | link_click | other */
+    read_source?: string | null
+}
+
+export interface ChatMessage {
+    id: string
+    channel_id: string
+    /** line_users.id（内部UUID） */
+    line_user_id: string
+    sender: 'user' | 'admin'
+    content_type: string
+    content: Record<string, unknown>
+    read_at: string | null
+    read_source?: string | null
+    /** 管理者側: chat | broadcast | step | auto_reply / 友だち側: line */
+    delivery_source?: string | null
+    /** 一斉配信由来の場合の messages.id */
+    message_id?: string | null
+    /** LINE側のメッセージID（受信の重複防止・送信取消の突き合わせ用） */
+    line_message_id?: string | null
+    /** 友だちが送信を取り消した日時 */
+    unsent_at?: string | null
+    created_at: string
 }
 
 export interface StepScenario {

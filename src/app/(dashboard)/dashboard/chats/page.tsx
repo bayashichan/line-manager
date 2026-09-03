@@ -32,6 +32,29 @@ interface ChatMessage {
     content: any
     created_at: string
     read_at: string | null
+    /** みなし既読の根拠（message / postback / link_click / other） */
+    read_source?: string | null
+    /** 送信元。chat=このチャット画面 / broadcast=一斉配信 / step=ステップ配信 / auto_reply=自動応答 / line=友だちからの受信 */
+    delivery_source?: string | null
+    /** 友だちが送信を取り消した日時 */
+    unsent_at?: string | null
+}
+
+// 管理者側メッセージに付ける送信元バッジ。
+// 1:1チャットには一斉配信もステップ配信も並ぶため、どの経路で送ったかが分からないと
+// 「この人にだけ送ったのか、全員に送ったのか」を担当者が判断できない。
+const DELIVERY_SOURCE_LABELS: Record<string, string> = {
+    broadcast: '一斉配信',
+    step: 'ステップ配信',
+    auto_reply: '自動応答',
+}
+
+// 既読と判断した根拠。LINEは既読を通知しないため、友だちの反応から推定している
+const READ_SOURCE_LABELS: Record<string, string> = {
+    message: '返信あり',
+    postback: 'ボタン操作',
+    link_click: 'リンクタップ',
+    other: '反応あり',
 }
 
 export default function ChatsPageWrapper() {
@@ -169,24 +192,36 @@ function ChatsPage() {
         markAsRead(selectedUser.id)
 
         // リアルタイム購読開始
+        // UPDATEも購読する。友だちが反応した瞬間にみなし既読が付くので、
+        // INSERTだけ見ていると画面を開き直すまで「未読」のままになってしまう。
         const channel = supabase
             .channel(`chat:${selectedUser.id}`)
             .on(
                 'postgres_changes',
                 {
-                    event: 'INSERT',
+                    event: '*',
                     schema: 'public',
                     table: 'chat_messages',
                     filter: `line_user_id=eq.${selectedUser.id}`,
                 },
                 (payload) => {
-                    const newMsg = payload.new as ChatMessage
-                    setMessages((prev) => [...prev, newMsg])
-                    // 自分が受信者なら既読処理（本来はフォーカス判定なども必要）
-                    if (newMsg.sender === 'user') {
-                        markAsRead(selectedUser.id)
+                    if (payload.eventType === 'INSERT') {
+                        const newMsg = payload.new as ChatMessage
+                        // 一斉配信は複数の経路から書き込まれるため、同じ行を二重に足さないようにする
+                        setMessages((prev) =>
+                            prev.some((m) => m.id === newMsg.id) ? prev : [...prev, newMsg]
+                        )
+                        // 自分が受信者なら既読処理（本来はフォーカス判定なども必要）
+                        if (newMsg.sender === 'user') {
+                            markAsRead(selectedUser.id)
+                        }
+                        scrollToBottom()
+                    } else if (payload.eventType === 'UPDATE') {
+                        const updated = payload.new as ChatMessage
+                        setMessages((prev) =>
+                            prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m))
+                        )
                     }
-                    scrollToBottom()
                 }
             )
             .subscribe()
@@ -476,6 +511,89 @@ function ChatsPage() {
         return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
     }
 
+    // 管理者側メッセージの送信元バッジ。チャット画面からの手動送信には付けない（既定なので冗長）
+    const sourceLabel = (msg: ChatMessage) =>
+        msg.delivery_source ? DELIVERY_SOURCE_LABELS[msg.delivery_source] ?? null : null
+
+    // 吹き出しの中身。LINE公式アカウントアプリで見えているやり取りと揃うよう、
+    // スタンプ・音声・ファイル・位置情報・送信取消もそれぞれの形で表示する
+    const renderMessageBody = (msg: ChatMessage) => {
+        if (msg.unsent_at || msg.content_type === 'unsend') {
+            return <span className="italic opacity-70">送信が取り消されました</span>
+        }
+
+        switch (msg.content_type) {
+            case 'text':
+                return msg.content?.text
+            case 'image':
+                return msg.content?.originalContentUrl ? (
+                    <a href={msg.content.originalContentUrl} target="_blank" rel="noopener noreferrer">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={msg.content.originalContentUrl} alt="画像" className="max-w-xs rounded-lg hover:opacity-90 transition-opacity" />
+                    </a>
+                ) : (
+                    <span className="italic opacity-80">画像（読み込めませんでした）</span>
+                )
+            case 'video':
+                return msg.content?.originalContentUrl ? (
+                    <video src={msg.content.originalContentUrl} controls className="max-w-xs rounded-lg" />
+                ) : (
+                    <span className="italic opacity-80">動画（読み込めませんでした）</span>
+                )
+            case 'audio':
+                return msg.content?.originalContentUrl ? (
+                    <audio src={msg.content.originalContentUrl} controls className="max-w-[240px]" />
+                ) : (
+                    <span className="italic opacity-80">音声（読み込めませんでした）</span>
+                )
+            case 'sticker':
+                return msg.content?.originalContentUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={msg.content.originalContentUrl} alt="スタンプ" className="w-24 h-24 object-contain" />
+                ) : (
+                    <span className="italic opacity-80">スタンプ</span>
+                )
+            case 'file':
+                return msg.content?.originalContentUrl ? (
+                    <a href={msg.content.originalContentUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                        {msg.content.fileName || 'ファイル'}
+                    </a>
+                ) : (
+                    <span className="italic opacity-80">{msg.content?.fileName || 'ファイル'}</span>
+                )
+            case 'location': {
+                const { latitude, longitude, title, address } = msg.content || {}
+                const mapUrl = latitude && longitude
+                    ? `https://www.google.com/maps?q=${latitude},${longitude}`
+                    : null
+                return (
+                    <div className="space-y-1">
+                        {title && <p className="font-medium">{title}</p>}
+                        {address && <p className="text-xs opacity-80">{address}</p>}
+                        {mapUrl && (
+                            <a href={mapUrl} target="_blank" rel="noopener noreferrer" className="underline text-xs">
+                                地図で開く
+                            </a>
+                        )}
+                    </div>
+                )
+            }
+            case 'flex':
+            case 'template':
+                return (
+                    <span className="italic opacity-80">
+                        {msg.content?.altText || 'リッチメッセージ'}
+                    </span>
+                )
+            default:
+                return (
+                    <span className="italic opacity-80">
+                        {msg.content_type} (表示未対応)
+                    </span>
+                )
+        }
+    }
+
     return (
         <div className="flex h-[calc(100vh-8rem)] gap-4">
             {/* 左サイドバー：友だちリスト (モバイル時はユーザー未選択時のみ表示) */}
@@ -580,24 +698,28 @@ function ChatsPage() {
                                                         : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-tl-none border border-slate-200 dark:border-slate-700'
                                                         }`}
                                                 >
-                                                    {msg.content_type === 'text' ? (
-                                                        msg.content.text
-                                                        // URLならリンクにする簡易実装も可能だが、今回はテキストとして表示
-                                                    ) : msg.content_type === 'image' ? (
-                                                        // eslint-disable-next-line @next/next/no-img-element
-                                                        <a href={msg.content.originalContentUrl} target="_blank" rel="noopener noreferrer">
-                                                            <img src={msg.content.originalContentUrl} alt="sent image" className="max-w-xs rounded-lg hover:opacity-90 transition-opacity" />
-                                                        </a>
-                                                    ) : msg.content_type === 'video' ? (
-                                                        <video src={msg.content.originalContentUrl} controls className="max-w-xs rounded-lg" />
-                                                    ) : (
-                                                        <span className="italic opacity-80">
-                                                            {msg.content_type} (表示未対応)
+                                                    {renderMessageBody(msg)}
+                                                </div>
+                                                <span className="text-[10px] text-slate-400 mt-1 px-1 flex items-center gap-2">
+                                                    {isAdmin && sourceLabel(msg) && (
+                                                        <span className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                                                            {sourceLabel(msg)}
                                                         </span>
                                                     )}
-                                                </div>
-                                                <span className="text-[10px] text-slate-400 mt-1 px-1">
-                                                    {isAdmin && msg.read_at && <span className="mr-2 text-blue-500">既読</span>}
+                                                    {isAdmin && (
+                                                        msg.read_at ? (
+                                                            <span
+                                                                className="text-blue-500"
+                                                                title={`${formatDate(msg.read_at)}に反応を確認${msg.read_source ? `（${READ_SOURCE_LABELS[msg.read_source] ?? '反応あり'}）` : ''}`}
+                                                            >
+                                                                既読 {formatDate(msg.read_at)}
+                                                            </span>
+                                                        ) : (
+                                                            <span title="LINEは既読を通知しないため、友だちからの反応が確認できるまで未確認と表示されます">
+                                                                未確認
+                                                            </span>
+                                                        )
+                                                    )}
                                                     {formatDate(msg.created_at)}
                                                 </span>
                                             </div>

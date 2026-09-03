@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { resolveRecipients } from '@/lib/messaging/recipients'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
+import { DeliveryReadStatus } from '@/components/delivery-read-status'
 import type { Message, Tag, StepScenario } from '@/types'
 import {
     Send,
@@ -1359,6 +1360,14 @@ export default function MessagesPage() {
                                                             )}
                                                         </div>
                                                     ))}
+
+                                                    {/* 友だちごとの既読状況（配信済みのみ） */}
+                                                    {message.status === 'sent' && (
+                                                        <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
+                                                            <div className="text-sm font-medium text-slate-500 mb-2">既読状況</div>
+                                                            <DeliveryReadStatus messageId={message.id} />
+                                                        </div>
+                                                    )}
 
                                                     {/* フィルタ情報 */}
                                                     {(message.filter_tags?.length || message.exclude_tags?.length) ? (

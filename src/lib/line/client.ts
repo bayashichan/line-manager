@@ -186,6 +186,65 @@ export class LineClient {
     }
 
     // =========================================================================
+    // 受信コンテンツ関連
+    // =========================================================================
+
+    /**
+     * 友だちが送ってきた画像・動画・音声・ファイルの実体を取得する。
+     *
+     * Webhookのmessageイベントには本文が入っておらず、messageIdだけが渡ってくる。
+     * このAPIを使って実体を取りにいかないと、1:1チャットでは「画像が送信されました」
+     * としか出せず、LINE公式アカウントアプリで見えているやり取りを再現できない。
+     *
+     * 取得できる期間はLINE側で限られている（送信から一定時間で消える）ため、
+     * Webhook受信時にその場で保存しておくこと。
+     */
+    async getMessageContent(
+        messageId: string,
+        options: { timeoutMs?: number; maxBytes?: number } = {}
+    ): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+        const { timeoutMs = 8000, maxBytes = 20 * 1024 * 1024 } = options
+        const url = `https://api-data.line.me/v2/bot/message/${messageId}/content`
+
+        // Webhookの応答を長時間ブロックしないよう必ず打ち切る。
+        // 大きな動画をそのまま待つとLINE側がWebhook失敗とみなし、再送やWebhook停止につながる。
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+        try {
+            const response = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${this.accessToken}` },
+                signal: controller.signal,
+            })
+
+            if (!response.ok) {
+                const detail = await response.text().catch(() => '')
+                throw new Error(
+                    `受信コンテンツの取得に失敗: ${response.status}${detail ? ` ${detail}` : ''}`
+                )
+            }
+
+            // 巨大ファイルは本文を読む前に諦める（メモリと実行時間の両方を守る）
+            const declaredLength = Number(response.headers.get('content-length'))
+            if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+                throw new Error(`受信コンテンツが大きすぎます: ${declaredLength} bytes`)
+            }
+
+            const buffer = await response.arrayBuffer()
+            if (buffer.byteLength > maxBytes) {
+                throw new Error(`受信コンテンツが大きすぎます: ${buffer.byteLength} bytes`)
+            }
+
+            return {
+                buffer,
+                contentType: response.headers.get('content-type') || 'application/octet-stream',
+            }
+        } finally {
+            clearTimeout(timer)
+        }
+    }
+
+    // =========================================================================
     // リッチメニュー関連
     // =========================================================================
 

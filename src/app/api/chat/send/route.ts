@@ -113,7 +113,8 @@ export async function POST(request: NextRequest) {
                 sender: 'admin',
                 content_type: body.type || 'text',
                 content: content,
-                read_at: null, // 管理者メッセージは未読状態で開始
+                read_at: null, // 管理者メッセージは未読状態で開始（友だちの反応があった時点で既読になる）
+                delivery_source: 'chat',
             })
 
         if (dbError) {

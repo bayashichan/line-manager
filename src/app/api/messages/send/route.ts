@@ -11,6 +11,7 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { recordBroadcastDelivery, type DeliveryOutcome } from '@/lib/messaging/delivery-log'
 
 /**
  * メッセージ送信
@@ -111,6 +112,8 @@ export async function POST(request: NextRequest) {
         let failureCount = 0
         // 失敗理由は配信履歴に残す（LINEのエラー本文がないと原因が特定できないため）
         let firstError: string | null = null
+        // 友だちごとの結果。既読状況の一覧で「届いた人／届かなかった人」を分けるのに使う
+        const outcomes = new Map<string, DeliveryOutcome>()
 
         const recordError = (error: unknown) => {
             if (!firstError) {
@@ -136,28 +139,38 @@ export async function POST(request: NextRequest) {
 
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
+                        outcomes.set(userId, { status: 'sent', error: null })
                     } catch (error) {
                         console.error(`個別送信エラー (${userId}):`, error)
                         recordError(error)
                         failureCount++
+                        outcomes.set(userId, { status: 'failed', error: toErrorMessage(error) })
                     }
                 }))
             }
         } else {
             // 通常の一斉送信モード（マルチキャスト）
+            // マルチキャストは相手ごとの結果を返さないため、バッチ単位の成否を全員に割り当てる
             for (const batch of batches) {
                 try {
                     await lineClient.multicast(batch, lineMessages)
                     successCount += batch.length
+                    batch.forEach(userId => outcomes.set(userId, { status: 'sent', error: null }))
                 } catch (error) {
                     console.error('配信エラー:', error)
                     recordError(error)
                     failureCount += batch.length
+                    const detail = toErrorMessage(error)
+                    batch.forEach(userId => outcomes.set(userId, { status: 'failed', error: detail }))
                 }
             }
         }
 
+        const sentAt = new Date().toISOString()
+
         // ステータス更新
+        // 友だちごとの記録より先に更新する。記録は行数が多く時間がかかるため、
+        // 途中で関数がタイムアウトしても配信履歴が「配信中」のまま止まらないようにする。
         await adminClient
             .from('messages')
             .update({
@@ -166,9 +179,19 @@ export async function POST(request: NextRequest) {
                 success_count: successCount,
                 failure_count: failureCount,
                 error_message: firstError,
-                sent_at: new Date().toISOString(),
+                sent_at: sentAt,
             })
             .eq('id', messageId)
+
+        // 友だちごとの配信記録 + 1:1チャットへの反映（既読状況の集計に使う）
+        await recordBroadcastDelivery(adminClient, {
+            channelId: message.channel_id,
+            messageId,
+            recipients,
+            outcomes,
+            blocks: lineMessages,
+            sentAt,
+        })
 
         return NextResponse.json({
             success: true,

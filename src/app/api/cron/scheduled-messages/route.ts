@@ -10,6 +10,7 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { recordBroadcastDelivery, type DeliveryOutcome } from '@/lib/messaging/delivery-log'
 
 /**
  * 予約配信を処理するCronジョブ
@@ -133,6 +134,8 @@ export async function GET(request: NextRequest) {
                 let successCount = 0
                 let failureCount = 0
                 let firstError: string | null = null
+                // 友だちごとの結果。既読状況の一覧で「届いた人／届かなかった人」を分けるのに使う
+                const outcomes = new Map<string, DeliveryOutcome>()
 
                 const recordError = (error: unknown) => {
                     if (!firstError) {
@@ -153,27 +156,35 @@ export async function GET(request: NextRequest) {
                                     replaceNamePlaceholder(lineMessages, userMap.get(userId))
                                 )
                                 successCount++
+                                outcomes.set(userId, { status: 'sent', error: null })
                             } catch (err) {
                                 console.error(`個別送信エラー (${userId}):`, err)
                                 recordError(err)
                                 failureCount++
+                                outcomes.set(userId, { status: 'failed', error: toErrorMessage(err) })
                             }
                         }))
                     }
                 } else {
+                    // マルチキャストは相手ごとの結果を返さないため、バッチ単位の成否を全員に割り当てる
                     for (const batch of batches) {
                         try {
                             await lineClient.multicast(batch, lineMessages)
                             successCount += batch.length
+                            batch.forEach(userId => outcomes.set(userId, { status: 'sent', error: null }))
                         } catch (err) {
                             console.error('配信エラー:', err)
                             recordError(err)
                             failureCount += batch.length
+                            const detail = toErrorMessage(err)
+                            batch.forEach(userId => outcomes.set(userId, { status: 'failed', error: detail }))
                         }
                     }
                 }
 
                 // ステータス更新
+                // 友だちごとの記録より先に更新する。記録は行数が多く時間がかかるため、
+                // 途中で打ち切られても配信履歴が「配信中」のまま止まらないようにする。
                 await supabase
                     .from('messages')
                     .update({
@@ -185,6 +196,16 @@ export async function GET(request: NextRequest) {
                         sent_at: now,
                     })
                     .eq('id', message.id)
+
+                // 友だちごとの配信記録 + 1:1チャットへの反映（既読状況の集計に使う）
+                await recordBroadcastDelivery(supabase, {
+                    channelId: message.channel_id,
+                    messageId: message.id,
+                    recipients,
+                    outcomes,
+                    blocks: lineMessages,
+                    sentAt: now,
+                })
 
                 processedCount++
             } catch (err) {

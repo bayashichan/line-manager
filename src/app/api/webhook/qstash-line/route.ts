@@ -10,6 +10,7 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { recordBroadcastDelivery, type DeliveryOutcome } from '@/lib/messaging/delivery-log'
 
 /**
  * QStashからのWebhook受信エンドポイント (予約配信の実行)
@@ -114,6 +115,8 @@ async function handler(request: NextRequest) {
         let successCount = 0
         let failureCount = 0
         let firstError: string | null = null
+        // 友だちごとの結果。既読状況の一覧で「届いた人／届かなかった人」を分けるのに使う
+        const outcomes = new Map<string, DeliveryOutcome>()
 
         const recordError = (error: unknown) => {
             if (!firstError) {
@@ -135,29 +138,48 @@ async function handler(request: NextRequest) {
                         )
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
+                        outcomes.set(userId, { status: 'sent', error: null })
                     } catch (error) {
                         console.error(`個別送信エラー (${userId}):`, error)
                         recordError(error)
                         failureCount++
+                        outcomes.set(userId, { status: 'failed', error: toErrorMessage(error) })
                     }
                 }))
             }
         } else {
             // 一斉送信モード
+            // マルチキャストは相手ごとの結果を返さないため、バッチ単位の成否を全員に割り当てる
             for (const batch of batches) {
                 try {
                     await lineClient.multicast(batch, lineMessages)
                     successCount += batch.length
+                    batch.forEach(userId => outcomes.set(userId, { status: 'sent', error: null }))
                 } catch (error) {
                     console.error('配信エラー:', error)
                     recordError(error)
                     failureCount += batch.length
+                    const detail = toErrorMessage(error)
+                    batch.forEach(userId => outcomes.set(userId, { status: 'failed', error: detail }))
                 }
             }
         }
 
         // 5. ステータス更新と完了
-        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount, firstError)
+        // 友だちごとの記録より先に更新する。記録は行数が多く時間がかかるため、
+        // 途中で打ち切られても配信履歴が「配信中」のまま止まらないようにする。
+        const sentAt = new Date().toISOString()
+        await completeMessage(adminClient, messageId, recipients.length, successCount, failureCount, firstError, sentAt)
+
+        // 友だちごとの配信記録 + 1:1チャットへの反映（既読状況の集計に使う）
+        await recordBroadcastDelivery(adminClient, {
+            channelId: message.channel_id,
+            messageId,
+            recipients,
+            outcomes,
+            blocks: lineMessages,
+            sentAt,
+        })
 
         return NextResponse.json({ success: true, successCount, failureCount })
 
@@ -175,7 +197,8 @@ async function completeMessage(
     total: number,
     success: number,
     failure: number,
-    errorMessage: string | null
+    errorMessage: string | null,
+    sentAt: string = new Date().toISOString()
 ) {
     await adminClient
         .from('messages')
@@ -185,7 +208,7 @@ async function completeMessage(
             success_count: success,
             failure_count: failure,
             error_message: errorMessage,
-            sent_at: new Date().toISOString(),
+            sent_at: sentAt,
         })
         .eq('id', messageId)
 }

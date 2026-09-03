@@ -132,6 +132,7 @@ export async function GET(request: NextRequest) {
                             content_type: contentType,
                             content: block,
                             read_at: null,
+                            delivery_source: 'step',
                         })
                     }
 

@@ -6,6 +6,13 @@ import type { AutoReply } from '@/types'
 import { calculateNextSendAt } from '@/lib/utils'
 import type { Channel } from '@/types'
 import { sendMetaCapiEvent } from '@/lib/meta-capi'
+import {
+    eventTimestampToIso,
+    markFriendReadUpTo,
+    resolveLineUserRowId,
+    type ReadSource,
+} from '@/lib/chat/read-receipts'
+import { normalizeIncomingMessage } from '@/lib/chat/incoming'
 
 interface WebhookEvent {
     type: string
@@ -21,6 +28,11 @@ interface WebhookEvent {
         type: string
         id: string
         text?: string
+        [key: string]: unknown
+    }
+    /** unsendイベント（送信取消）で取り消されたメッセージ */
+    unsend?: {
+        messageId: string
     }
 }
 
@@ -134,13 +146,87 @@ async function processEvent(
             // 上書きされ、一覧の登録日・並び順が壊れるため）。
             await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false })
             // チャット履歴に保存
-            await handleMessage(supabase, channel.id, userId, event.message)
+            await handleMessage(supabase, lineClient, channel.id, userId, event.message)
+            // 返信をくれたということはトークを開いている。
+            // 既読の境界はイベント発生時刻なので、この直後に送った自動応答は未読のまま残る（意図どおり）。
+            await markRead(supabase, channel.id, userId, event, 'message')
             break
         case 'postback':
             await handlePostback(supabase, lineClient, channel, userId, (event as any).postback)
+            // ボタンやリッチメニューをタップした = トークを開いている
+            await markRead(supabase, channel.id, userId, event, 'postback')
+            break
+        case 'unsend':
+            await handleUnsend(supabase, channel.id, event.unsend?.messageId)
+            break
+        case 'videoPlayComplete':
+            // 配信した動画を最後まで再生した = トークを開いている
+            await markRead(supabase, channel.id, userId, event, 'other')
             break
         default:
             console.log('未処理のイベント:', event.type)
+    }
+}
+
+/**
+ * みなし既読の反映。
+ *
+ * LINEは既読を通知してくれないので、友だち自身の操作（返信・タップ・動画再生）を
+ * 「トークを開いた」証跡として扱い、それ以前に送ったメッセージを既読にする。
+ * 既読はあくまで補助情報なので、ここで失敗してもWebhookの主処理は止めない。
+ */
+async function markRead(
+    supabase: ReturnType<typeof createAdminClient>,
+    channelId: string,
+    lineUserId: string,
+    event: WebhookEvent,
+    source: ReadSource
+) {
+    try {
+        const rowId = await resolveLineUserRowId(supabase, channelId, lineUserId)
+        if (!rowId) return
+
+        await markFriendReadUpTo(supabase, {
+            channelId,
+            lineUserRowId: rowId,
+            // 処理時刻ではなくイベント発生時刻を使う。Webhookが遅延しても既読の境界がぶれない
+            readAt: eventTimestampToIso(event.timestamp),
+            source,
+        })
+    } catch (error) {
+        console.error(`既読反映エラー (userId: ${lineUserId}):`, error)
+    }
+}
+
+/**
+ * 送信取消（unsend）イベント処理。
+ *
+ * 友だちがLINE上でメッセージを取り消したのに管理画面に残り続けると、
+ * 実際のトーク画面と食い違って混乱のもとになるため、取り消し済みとして記録する。
+ */
+async function handleUnsend(
+    supabase: ReturnType<typeof createAdminClient>,
+    channelId: string,
+    messageId: string | undefined
+) {
+    if (!messageId) return
+
+    try {
+        const { error } = await supabase
+            .from('chat_messages')
+            .update({
+                unsent_at: new Date().toISOString(),
+                content: { type: 'unsend' },
+                content_type: 'unsend',
+            })
+            .eq('channel_id', channelId)
+            .eq('line_message_id', messageId)
+
+        if (error) {
+            console.error('送信取消の反映エラー:', error)
+        }
+    } catch (error) {
+        console.error('送信取消の処理エラー:', error)
     }
 }
 
@@ -532,6 +618,7 @@ async function handleAutoReply(
                 sender: 'admin',
                 content_type: block.type,
                 content: block,
+                delivery_source: 'auto_reply',
             }))
             const { error: logError } = await supabase.from('chat_messages').insert(inserts)
             if (logError) {
@@ -549,6 +636,7 @@ async function handleAutoReply(
  */
 async function handleMessage(
     supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
     channelId: string,
     lineUserId: string,
     message: any
@@ -566,27 +654,36 @@ async function handleMessage(
 
         if (!user) return
 
+        // 画像・動画・音声・ファイルはWebhookに実体が入っていないので、
+        // ここでLINEのコンテンツAPIから取得して保存する。
+        // これをやらないと、LINE公式アカウントアプリでは見えているやり取りが
+        // 管理画面の1:1チャットでは空の吹き出しになってしまう。
+        const normalized = await normalizeIncomingMessage(lineClient, channelId, message)
+
         // メッセージを保存
+        // line_message_id を入れておくことで、Webhookが再送されても二重登録されない
+        // （channel_id + line_message_id にユニークインデックスあり）。
         const { error: msgError } = await supabase
             .from('chat_messages')
             .insert({
                 channel_id: channelId,
                 line_user_id: user.id,
                 sender: 'user',
-                content_type: message.type,
-                content: message,
+                content_type: normalized.contentType,
+                content: normalized.content,
+                line_message_id: message.id ?? null,
+                delivery_source: 'line',
             })
 
         if (msgError) {
+            // 一意制約違反（Webhook再送）は想定内なので、未読数を二重に増やさず終了する
+            if (msgError.code === '23505') {
+                console.log('受信済みのメッセージのためスキップ:', message.id)
+                return
+            }
             console.error('メッセージ保存エラー:', msgError)
             return
         }
-
-        // メッセージ内容のテキスト化
-        const messageText = message.type === 'text' ? message.text :
-            message.type === 'image' ? '画像が送信されました' :
-                message.type === 'video' ? '動画が送信されました' :
-                    'メッセージが送信されました'
 
         // ユーザー情報の更新（最終メッセージ日時、未読数）
         await supabase
@@ -594,7 +691,7 @@ async function handleMessage(
             .update({
                 last_message_at: new Date().toISOString(),
                 unread_count: (user.unread_count || 0) + 1,
-                last_message_content: messageText,
+                last_message_content: normalized.preview,
             })
             .eq('id', user.id)
 

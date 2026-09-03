@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
+import { markFriendReadUpTo } from '@/lib/chat/read-receipts'
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams
@@ -37,10 +38,12 @@ export async function GET(request: NextRequest) {
         }
 
         // チャンネル情報など取得（LINEクライアント作成用）
+        // messages.channel_id は channels.id を指すUUID。LINE側のチャネルID(channel_id列)
+        // ではないので、id で引かないと必ず見つからず 404 になる。
         const { data: channel } = await supabase
             .from('channels')
             .select('*')
-            .eq('channel_id', message.channel_id)
+            .eq('id', message.channel_id)
             .single()
 
         if (!channel) {
@@ -58,6 +61,15 @@ export async function GET(request: NextRequest) {
             .single()
 
         if (user) {
+            // 0. みなし既読
+            //    配信に入れたリンクをタップした = そのトークを開いている、と判断できる。
+            //    LINEは既読を通知してくれないので、この操作が数少ない確かな手がかりになる。
+            await markFriendReadUpTo(supabase, {
+                channelId: message.channel_id,
+                lineUserRowId: user.id,
+                source: 'link_click',
+            }).catch(err => console.error('既読反映エラー(リンクタップ):', err))
+
             // 1. タグ付け
             if (actions.tagIds && actions.tagIds.length > 0) {
                 const tagInserts = actions.tagIds.map((tagId: string) => ({

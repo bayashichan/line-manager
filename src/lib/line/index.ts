@@ -10,3 +10,4 @@ export {
     toErrorMessage,
     LineContentError,
 } from './message-content'
+export type { LineMessage } from './message-content'
