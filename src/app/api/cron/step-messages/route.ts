@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
+import { LineClient, buildLineMessages, replaceNamePlaceholder } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
 
 /**
@@ -88,74 +88,17 @@ export async function GET(request: NextRequest) {
 
                 // メッセージ送信
                 try {
-                    // コンテンツの変換（リッチメッセージをFlex Messageに変換）
-                    let contentArray = Array.isArray(currentStepMessage.content)
-                        ? currentStepMessage.content
-                        : [currentStepMessage.content]
-
-                    const processedContent = contentArray.map((block: any) => {
-                        // customActionsがある、または旧linkUrlがある場合はFlex Message化
-                        if (block.type === 'image' && (block.customActions || block.linkUrl)) {
-                            let action: any
-
-                            if (block.customActions) {
-                                // customActions優先
-                                if (block.customActions.redirectUrl) {
-                                    action = {
-                                        type: 'uri',
-                                        uri: block.customActions.redirectUrl
-                                    }
-                                } else {
-                                    action = {
-                                        type: 'postback',
-                                        data: `action=custom&scenario_id=${scenario.id}`
-                                    }
-                                }
-                            } else if (block.linkUrl) {
-                                // 旧仕様互換
-                                action = {
-                                    type: 'uri',
-                                    uri: block.linkUrl
-                                }
-                            }
-
-                            return {
-                                type: 'flex',
-                                altText: '画像メッセージ',
-                                contents: {
-                                    type: 'bubble',
-                                    body: {
-                                        type: 'box',
-                                        layout: 'vertical',
-                                        contents: [
-                                            {
-                                                type: 'image',
-                                                url: block.originalContentUrl,
-                                                size: 'full',
-                                                aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
-                                                aspectMode: 'cover',
-                                                action: action
-                                            }
-                                        ],
-                                        paddingAll: '0px'
-                                    }
-                                }
-                            }
-                        }
-                        return block
+                    // コンテンツの変換（アクション付き画像はFlex Messageになる）
+                    // 変換は一斉配信と共通（src/lib/line/message-content.ts）
+                    const lineMessages = buildLineMessages(currentStepMessage.content, {
+                        postbackData: `action=custom&scenario_id=${scenario.id}`,
                     })
 
                     // {name}置換処理
-                    const displayName = lineUser?.display_name || '友だち'
-                    const personalizedContent = processedContent.map((block: any) => {
-                        if (block.type === 'text' && block.text?.includes('{name}')) {
-                            return {
-                                ...block,
-                                text: block.text.replace(/{name}/g, displayName)
-                            }
-                        }
-                        return block
-                    })
+                    const personalizedContent = replaceNamePlaceholder(
+                        lineMessages,
+                        lineUser?.display_name
+                    )
 
                     await lineClient.pushMessage(lineUser.line_user_id, personalizedContent)
 

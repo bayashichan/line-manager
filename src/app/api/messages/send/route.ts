@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
+import {
+    LineClient,
+    LineContentError,
+    buildLineMessages,
+    hasNamePlaceholder,
+    replaceNamePlaceholder,
+    toErrorMessage,
+} from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
 
@@ -39,6 +46,25 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'メッセージが見つかりません' }, { status: 404 })
         }
 
+        // コンテンツの変換（アクション付き画像はFlex Messageになる）
+        // LINEは1つでも不正な値があるとリクエスト全体を400で弾くため、送信対象を集める前に検証する
+        let lineMessages: object[]
+        try {
+            lineMessages = buildLineMessages(message.content, {
+                postbackData: `action=custom&mid=${messageId}`,
+            })
+        } catch (err) {
+            if (err instanceof LineContentError) {
+                await adminClient
+                    .from('messages')
+                    .update({ status: 'failed', error_message: err.message })
+                    .eq('id', messageId)
+
+                return NextResponse.json({ error: err.message }, { status: 400 })
+            }
+            throw err
+        }
+
         // 配信対象ユーザーを取得（1000件上限を避けるため全件ページング取得）
         const { recipients, error: recipientsError } = await resolveRecipients(adminClient, {
             channelId: message.channel_id,
@@ -51,7 +77,7 @@ export async function POST(request: NextRequest) {
             console.error('配信対象の取得エラー:', recipientsError)
             await adminClient
                 .from('messages')
-                .update({ status: 'failed' })
+                .update({ status: 'failed', error_message: '配信対象の取得に失敗しました' })
                 .eq('id', messageId)
 
             return NextResponse.json({ error: '配信対象の取得に失敗しました' }, { status: 500 })
@@ -65,6 +91,7 @@ export async function POST(request: NextRequest) {
                     total_recipients: 0,
                     success_count: 0,
                     failure_count: 0,
+                    error_message: null,
                     sent_at: new Date().toISOString(),
                 })
                 .eq('id', messageId)
@@ -82,68 +109,16 @@ export async function POST(request: NextRequest) {
 
         let successCount = 0
         let failureCount = 0
+        // 失敗理由は配信履歴に残す（LINEのエラー本文がないと原因が特定できないため）
+        let firstError: string | null = null
 
-        // コンテンツの変換（リッチメッセージをFlex Messageに変換）
-        const processedContent = (message.content as any[]).map((block: any) => {
-            // customActionsがある、または旧linkUrlがある場合はFlex Message化
-            if (block.type === 'image' && (block.customActions || block.linkUrl)) {
-                let action: any
-
-                if (block.customActions) {
-                    // customActions優先
-                    if (block.customActions.redirectUrl) {
-                        action = {
-                            type: 'uri',
-                            uri: block.customActions.redirectUrl
-                        }
-                    } else {
-                        // redirectUrlがない場合はPostback (タグ付け、シナリオなどはPostbackイベントで処理)
-                        action = {
-                            type: 'postback',
-                            data: `action=custom&mid=${messageId}`
-                        }
-                    }
-                } else if (block.linkUrl) {
-                    // 旧仕様互換
-                    action = {
-                        type: 'uri',
-                        uri: block.linkUrl
-                    }
-                }
-
-                return {
-                    type: 'flex',
-                    altText: '画像メッセージ',
-                    contents: {
-                        type: 'bubble',
-                        body: {
-                            type: 'box',
-                            layout: 'vertical',
-                            contents: [
-                                {
-                                    type: 'image',
-                                    url: block.originalContentUrl,
-                                    size: 'full',
-                                    aspectRatio: block.aspectRatio ? `${block.aspectRatio}:1` : undefined,
-                                    aspectMode: 'cover',
-                                    action: action
-                                }
-                            ],
-                            paddingAll: '0px'
-                        }
-                    }
-                }
+        const recordError = (error: unknown) => {
+            if (!firstError) {
+                firstError = toErrorMessage(error)
             }
-            return block
-        })
+        }
 
-        // {name}プレースホルダーが含まれているかチェック
-        const hasNamePlaceholder = processedContent.some((block: any) =>
-            (block.type === 'text' && block.text?.includes('{name}'))
-            // Flex Message (リッチメッセージ) の中身までは再帰的にチェックしていませんが、現状の構成ならtextブロックが主
-        )
-
-        if (hasNamePlaceholder) {
+        if (hasNamePlaceholder(lineMessages)) {
             // 個別送信モード（プッシュメッセージ）
             // display_name は recipients に含まれているので再クエリしない
             const userMap = new Map(recipients.map(r => [r.line_user_id, r.display_name]))
@@ -154,23 +129,16 @@ export async function POST(request: NextRequest) {
             for (const batch of pushBatches) {
                 await Promise.all(batch.map(async (userId) => {
                     try {
-                        const displayName = userMap.get(userId) || '友だち'
-
-                        // コンテンツ内の{name}を置換
-                        const personalizedContent = processedContent.map((block: any) => {
-                            if (block.type === 'text') {
-                                return {
-                                    ...block,
-                                    text: block.text.replace(/{name}/g, displayName)
-                                }
-                            }
-                            return block
-                        })
+                        const personalizedContent = replaceNamePlaceholder(
+                            lineMessages,
+                            userMap.get(userId)
+                        )
 
                         await lineClient.pushMessage(userId, personalizedContent)
                         successCount++
                     } catch (error) {
                         console.error(`個別送信エラー (${userId}):`, error)
+                        recordError(error)
                         failureCount++
                     }
                 }))
@@ -179,10 +147,11 @@ export async function POST(request: NextRequest) {
             // 通常の一斉送信モード（マルチキャスト）
             for (const batch of batches) {
                 try {
-                    await lineClient.multicast(batch, processedContent)
+                    await lineClient.multicast(batch, lineMessages)
                     successCount += batch.length
                 } catch (error) {
                     console.error('配信エラー:', error)
+                    recordError(error)
                     failureCount += batch.length
                 }
             }
@@ -196,6 +165,7 @@ export async function POST(request: NextRequest) {
                 total_recipients: recipients.length,
                 success_count: successCount,
                 failure_count: failureCount,
+                error_message: firstError,
                 sent_at: new Date().toISOString(),
             })
             .eq('id', messageId)
@@ -205,6 +175,7 @@ export async function POST(request: NextRequest) {
             total: recipients.length,
             successCount,
             failureCount,
+            error: firstError,
         })
     } catch (error) {
         console.error('メッセージ送信エラー:', error)

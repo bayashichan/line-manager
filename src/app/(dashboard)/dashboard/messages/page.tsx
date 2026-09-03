@@ -61,6 +61,19 @@ interface User {
 const MAX_BLOCKS = 5
 const MAX_TEXT_LENGTH = 5000
 
+/**
+ * 画像タップ時に開くURLとして LINE が受け付ける形式か。
+ * スキームなし（例: example.com）はLINE側で400になるため、送信前にここで弾く。
+ */
+const isValidActionUrl = (url: string): boolean => {
+    try {
+        const parsed = new URL(url.trim())
+        return ['http:', 'https:', 'tel:', 'line:'].includes(parsed.protocol)
+    } catch {
+        return false
+    }
+}
+
 export default function MessagesPage() {
     const [messages, setMessages] = useState<Message[]>([])
     const [tags, setTags] = useState<Tag[]>([])
@@ -385,21 +398,28 @@ export default function MessagesPage() {
             switch (block.type) {
                 case 'text':
                     return { type: 'text', text: block.text || '' }
-                case 'image':
+                case 'image': {
+                    // 「通常画像」に戻した場合は設定済みのアクションを持ち越さない
+                    // （残しているとアクション付き画像として送られてしまう）
+                    const useActions = block.imageType === 'rich' && block.customActions
+
                     return {
                         type: 'image',
                         originalContentUrl: block.imageUrl,
                         previewImageUrl: block.imageUrl,
-                        // linkUrlは廃止し、customActions.redirectUrlに統合するか、互換性のために残す
-                        // ここではcustomActionsを優先使用
-                        customActions: block.customActions ? {
-                            tagIds: block.customActions.tagIds?.length ? block.customActions.tagIds : undefined,
-                            scenarioId: block.customActions.scenarioId,
-                            replyText: block.customActions.replyText,
-                            redirectUrl: block.customActions.redirectUrl
+                        // linkUrlは廃止し、customActions.redirectUrlに統合済み
+                        customActions: useActions ? {
+                            tagIds: block.customActions?.tagIds?.length ? block.customActions.tagIds : undefined,
+                            scenarioId: block.customActions?.scenarioId,
+                            replyText: block.customActions?.replyText,
+                            redirectUrl: block.customActions?.redirectUrl?.trim() || undefined
                         } : undefined,
-                        aspectRatio: block.width && block.height ? block.width / block.height : undefined,
+                        // 横縦比。桁を落としておく（LINEへ渡すときに "{width}:{height}" へ変換される）
+                        aspectRatio: block.width && block.height
+                            ? Math.round((block.width / block.height) * 1000) / 1000
+                            : undefined,
                     }
+                }
                 case 'video':
                     return {
                         type: 'video',
@@ -417,8 +437,12 @@ export default function MessagesPage() {
             switch (block.type) {
                 case 'text':
                     return block.text && block.text.trim().length > 0 && block.text.length <= MAX_TEXT_LENGTH
-                case 'image':
-                    return block.imageUrl
+                case 'image': {
+                    if (!block.imageUrl) return false
+                    const redirectUrl = block.customActions?.redirectUrl
+                    // 不正なURLのまま配信するとLINEにリクエストごと弾かれ、配信自体が失敗する
+                    return !redirectUrl || isValidActionUrl(redirectUrl)
+                }
                 case 'video':
                     return block.videoUrl
                 default:
@@ -504,8 +528,18 @@ export default function MessagesPage() {
                     body: JSON.stringify({ messageId: message.id }),
                 })
 
+                const result = await response.json().catch(() => ({}))
+
                 if (!response.ok) {
-                    throw new Error('送信に失敗しました')
+                    throw new Error(result?.error || '送信に失敗しました')
+                }
+
+                // 200でも全員に届いていないことがある（LINE側が個別に弾くケース）
+                if (result?.failureCount > 0) {
+                    alert(
+                        `${result.failureCount}件の配信に失敗しました。\n` +
+                        `${result.error || '詳細は配信履歴を確認してください。'}`
+                    )
                 }
             } else {
                 const response = await fetch('/api/schedule-broadcast', {
@@ -547,12 +581,13 @@ export default function MessagesPage() {
                 }),
             })
 
-            if (!response.ok) throw new Error('Failed to send test message')
+            const result = await response.json().catch(() => ({}))
+            if (!response.ok) throw new Error(result?.error || 'テスト送信に失敗しました')
             alert('テスト送信が完了しました')
             setShowTestModal(false)
-        } catch (error) {
+        } catch (error: any) {
             console.error('Test send error:', error)
-            alert('テスト送信に失敗しました')
+            alert(error?.message || 'テスト送信に失敗しました')
         }
         setIsTestSending(false)
     }
@@ -927,7 +962,12 @@ export default function MessagesPage() {
                                                                             Webページを開く
                                                                         </Label>
                                                                         <Input
-                                                                            className="text-sm"
+                                                                            className={cn(
+                                                                                "text-sm",
+                                                                                block.customActions?.redirectUrl && !isValidActionUrl(block.customActions.redirectUrl)
+                                                                                    ? "border-red-500 focus-visible:ring-red-500"
+                                                                                    : ""
+                                                                            )}
                                                                             placeholder="https://example.com"
                                                                             value={block.customActions?.redirectUrl || ''}
                                                                             onChange={(e) => {
@@ -938,6 +978,11 @@ export default function MessagesPage() {
                                                                                 updateBlock(index, { customActions: updatedActions })
                                                                             }}
                                                                         />
+                                                                        {block.customActions?.redirectUrl && !isValidActionUrl(block.customActions.redirectUrl) && (
+                                                                            <p className="text-xs text-red-500">
+                                                                                https:// から始まるURLを入力してください（この形式でないとLINEが配信を受け付けません）
+                                                                            </p>
+                                                                        )}
                                                                     </div>
                                                                 </div>
                                                             </>
@@ -1217,6 +1262,15 @@ export default function MessagesPage() {
                                                 </span>
                                             </div>
                                             <h3 className="font-medium truncate">{message.title}</h3>
+
+                                            {/* 失敗した理由（LINE APIのエラーなど）を配信履歴から確認できるようにする */}
+                                            {message.error_message && (
+                                                <div className="mt-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 p-2">
+                                                    <p className="text-xs text-red-700 dark:text-red-300 break-words whitespace-pre-wrap">
+                                                        {message.error_message}
+                                                    </p>
+                                                </div>
+                                            )}
 
                                             {/* 展開時・非展開時の表示切り替え */}
                                             {expandedMessageId === message.id ? (
