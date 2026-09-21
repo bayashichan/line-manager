@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
+import { isR2Configured, uploadToR2Server } from '@/lib/storage/r2'
 
 /**
  * リッチメニュー一覧取得
@@ -78,17 +79,21 @@ export async function POST(request: NextRequest) {
             const arrayBuffer = await imageFile.arrayBuffer()
             const buffer = new Uint8Array(arrayBuffer)
 
-            const { error: uploadError } = await supabase.storage
-                .from('line-assets')
-                .upload(filePath, buffer, {
-                    contentType,
-                })
+            if (!isR2Configured()) {
+                return NextResponse.json(
+                    { error: 'ファイル配信用のR2が未設定です（R2_* の環境変数を確認してください）' },
+                    { status: 503 }
+                )
+            }
 
-            if (!uploadError) {
-                const { data: { publicUrl } } = supabase.storage
-                    .from('line-assets')
-                    .getPublicUrl(filePath)
-                imageUrl = publicUrl
+            try {
+                imageUrl = await uploadToR2Server(filePath, buffer, contentType)
+            } catch (uploadError) {
+                console.error('リッチメニュー画像のアップロードに失敗:', uploadError)
+                return NextResponse.json(
+                    { error: '画像のアップロードに失敗しました' },
+                    { status: 500 }
+                )
             }
         }
 

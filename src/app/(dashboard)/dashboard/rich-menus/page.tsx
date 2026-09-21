@@ -6,6 +6,7 @@ import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent, Textare
 import { cn, getCookie } from '@/lib/utils'
 import type { RichMenu, RichMenuArea } from '@/types'
 import { isAreaConfigured } from '@/lib/rich-menu/areas'
+import { uploadToR2 } from '@/lib/storage/upload-client'
 import {
     Plus,
     Edit2,
@@ -337,22 +338,19 @@ export default function RichMenusPage() {
             let imageUrl = editingMenu?.image_url || null
 
             if (formImageFile) {
+                // リッチメニュー画像はLINEの仕様でサイズが固定なので圧縮・リサイズはしない。
                 // 拡張子とContent-Typeは実際の中身（JPEG）に合わせる。
                 // ずれるとLINEへ誤ったContent-Typeで転送され、Androidで描画できなくなる
                 const contentType = formImageFile.type || 'image/jpeg'
                 const fileExt = contentType === 'image/png' ? 'png' : 'jpg'
-                const fileName = `${Date.now()}.${fileExt}`
-                const filePath = `rich-menus/${currentChannelId}/${fileName}`
+                const named = new File([formImageFile], `${Date.now()}.${fileExt}`, { type: contentType })
 
-                const { error: uploadError } = await supabase.storage
-                    .from('line-assets')
-                    .upload(filePath, formImageFile, { contentType })
-
-                if (!uploadError) {
-                    const { data: { publicUrl } } = supabase.storage
-                        .from('line-assets')
-                        .getPublicUrl(filePath)
-                    imageUrl = publicUrl
+                try {
+                    imageUrl = await uploadToR2(named, currentChannelId, { prefix: 'rich-menus' })
+                } catch (err) {
+                    console.error('リッチメニュー画像のアップロードに失敗:', err)
+                    alert(err instanceof Error ? err.message : '画像のアップロードに失敗しました')
+                    return
                 }
             }
 

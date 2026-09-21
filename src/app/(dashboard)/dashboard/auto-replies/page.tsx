@@ -7,6 +7,7 @@ import { cn, formatDateTime, getCookie } from '@/lib/utils'
 // LineClient経由(@/lib/line)ではなく直接importする。indexはnode:cryptoを使う
 // client.tsを再エクスポートしており、クライアントコンポーネントに引き込みたくないため。
 import { MAX_TEXT_LENGTH, MAX_BLOCKS } from '@/lib/line/auto-reply'
+import { uploadToR2 } from '@/lib/storage/upload-client'
 import type { AutoReply, AutoReplyMatchType, MessageContent } from '@/types'
 import {
     MessageSquareReply,
@@ -157,18 +158,16 @@ export default function AutoRepliesPage() {
     const handleImageUpload = async (index: number, file: File) => {
         if (!currentChannelId) return
         setUploadingIndex(index)
-        const supabase = createClient()
         try {
-            const fileExt = file.name.split('.').pop()
-            const fileName = `${Date.now()}.${fileExt}`
-            const filePath = `auto-replies/${currentChannelId}/images/${fileName}`
-            const { error: uploadError } = await supabase.storage.from('line-assets').upload(filePath, file)
-            if (uploadError) throw uploadError
-            const { data: { publicUrl } } = supabase.storage.from('line-assets').getPublicUrl(filePath)
+            // 自動応答の画像もLINE側から都度取得されるため、転送量無料のR2に置く
+            const publicUrl = await uploadToR2(file, currentChannelId, {
+                prefix: 'auto-replies',
+                compress: true,
+            })
             updateBlock(index, { imageUrl: publicUrl })
         } catch (err) {
             console.error('アップロードエラー:', err)
-            alert('画像のアップロードに失敗しました')
+            alert(err instanceof Error ? err.message : '画像のアップロードに失敗しました')
         }
         setUploadingIndex(null)
     }

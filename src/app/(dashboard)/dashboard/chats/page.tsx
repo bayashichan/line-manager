@@ -12,6 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Send, Loader2, Image as ImageIcon, Smile, ArrowLeft } from 'lucide-react'
 import EmojiPicker from 'emoji-picker-react'
 import imageCompression from 'browser-image-compression'
+import { uploadToR2 as uploadFileToR2 } from '@/lib/storage/upload-client'
 
 // 型定義
 interface ChatUser {
@@ -316,34 +317,10 @@ function ChatsPage() {
         if (fileInputRef.current) fileInputRef.current.value = ''
     }
 
-    // R2へのアップロード関数
+    // R2へのアップロード（共通ヘルパーに委譲）
     const uploadToR2 = async (file: File): Promise<string> => {
-        // 1. 署名付きURLを取得
-        const res = await fetch('/api/upload/url', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                filename: file.name,
-                contentType: file.type,
-                channelId: channelId
-            })
-        })
-
-        if (!res.ok) throw new Error('Failed to get upload URL')
-        const { uploadUrl, publicUrl } = await res.json()
-
-        // 2. R2へ直接アップロード
-        const uploadRes = await fetch(uploadUrl, {
-            method: 'PUT',
-            body: file,
-            headers: {
-                'Content-Type': file.type
-            }
-        })
-
-        if (!uploadRes.ok) throw new Error('Failed to upload to R2')
-
-        return publicUrl
+        if (!channelId) throw new Error('チャンネルが選択されていません')
+        return uploadFileToR2(file, channelId, { prefix: 'chats' })
     }
 
     // メッセージ送信（テキスト または ファイル）

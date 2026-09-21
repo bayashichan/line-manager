@@ -7,9 +7,22 @@ LINE公式アカウントを一元管理するためのWebアプリケーショ�
 ## 技術スタック
 - **フロントエンド**: Next.js 15 (App Router, TypeScript)
 - **スタイリング**: Tailwind CSS + Shadcn/ui
-- **バックエンド/DB**: Supabase (PostgreSQL, Auth, Storage)
+- **バックエンド/DB**: Supabase (PostgreSQL, Auth)
+- **ファイル配信**: Cloudflare R2
 - **ジョブキュー**: Upstash QStash
 - **LINE連携**: LINE Messaging API
+
+### ファイル配信について（重要）
+画像・動画は必ず Cloudflare R2 に置く。Supabase Storage の公開URLは使わない。
+
+LINEは配信のたびに `originalContentUrl` / `previewImageUrl` を受信者ぶん取得しにくるため、
+Supabase の公開バケットを配信元にすると転送量(cached egress)が無料枠を超え、
+`exceed_cached_egress_quota` でプロジェクトごと停止される（Auth も止まりログインできなくなる）。
+R2 は egress が無料なのでこちらに統一している。
+
+アップロードは共通ヘルパー経由で行う。
+- クライアント: `uploadToR2()` (`src/lib/storage/upload-client.ts`)
+- サーバー: `uploadToR2Server()` (`src/lib/storage/r2.ts`)
 
 ## セットアップ
 
