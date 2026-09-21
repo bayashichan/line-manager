@@ -27,7 +27,7 @@ import {
     Video,
     Settings,
 } from 'lucide-react'
-import imageCompression from 'browser-image-compression'
+import { uploadToR2 } from '@/lib/storage/upload-client'
 import { useRouter } from 'next/navigation'
 
 type MessageType = 'text' | 'image' | 'video'
@@ -302,23 +302,13 @@ export default function StepPage() {
 
         setUploadingStepIndex(stepIndex)
         setUploadingBlockIndex(blockIndex)
-        const supabase = createClient()
 
         try {
-            const fileExt = file.name.split('.').pop()
-            const fileName = `${Date.now()}.${fileExt}`
-            const folder = type === 'image' ? 'images' : 'videos'
-            const filePath = `steps/${currentChannelId}/${folder}/${fileName}`
-
-            const { error: uploadError } = await supabase.storage
-                .from('line-assets')
-                .upload(filePath, file)
-
-            if (uploadError) throw uploadError
-
-            const { data: { publicUrl } } = supabase.storage
-                .from('line-assets')
-                .getPublicUrl(filePath)
+            // 配信画像はLINE側から受信者ぶん取得されるため、転送量無料のR2に置く
+            const publicUrl = await uploadToR2(file, currentChannelId, {
+                prefix: 'steps',
+                compress: type === 'image',
+            })
 
             if (type === 'image') {
                 const { width, height } = await getImageDimensions(publicUrl)
@@ -328,7 +318,7 @@ export default function StepPage() {
             }
         } catch (error) {
             console.error('アップロードエラー:', error)
-            alert('アップロードに失敗しました')
+            alert(error instanceof Error ? error.message : 'アップロードに失敗しました')
         }
 
         setUploadingStepIndex(null)

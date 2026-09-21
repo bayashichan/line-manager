@@ -1,25 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { createClient } from '@/lib/supabase/server'
+import { buildR2PublicUrl, createR2Client, isR2Configured } from '@/lib/storage/r2'
 
-// R2 Client Initialization
-const R2 = new S3Client({
-    region: 'auto',
-    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-    },
-})
+// 用途ごとのプレフィックス。想定外の値でキー空間を汚さないよう許可制にする
+const ALLOWED_PREFIXES = ['chats', 'messages', 'steps', 'auto-replies', 'forms', 'rich-menus']
 
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json()
-        const { filename, contentType, channelId } = body
+        const { filename, contentType, channelId, prefix } = body
 
         if (!filename || !contentType || !channelId) {
             return NextResponse.json({ error: 'Missing parameters' }, { status: 400 })
+        }
+
+        if (!isR2Configured()) {
+            return NextResponse.json(
+                { error: 'ファイル配信用のR2が未設定です（R2_* の環境変数を確認してください）' },
+                { status: 503 }
+            )
         }
 
         const supabase = await createClient()
@@ -30,12 +31,13 @@ export async function POST(request: NextRequest) {
         }
 
         // Generate a unique file path
-        // Format: {channelId}/{userId}/{timestamp}_{random}.{extension} (Use safe characters only)
+        // Format: {prefix?}/{channelId}/{userId}/{timestamp}_{random}.{extension} (Use safe characters only)
         const timestamp = Date.now()
         const random = Math.random().toString(36).substring(7)
         const ext = filename.split('.').pop() || 'bin'
         const safeFilename = `${timestamp}_${random}.${ext}`
-        const key = `${channelId}/${user.id}/${safeFilename}`
+        const folder = ALLOWED_PREFIXES.includes(prefix) ? `${prefix}/` : ''
+        const key = `${folder}${channelId}/${user.id}/${safeFilename}`
 
         // Create the PutObject command
         const command = new PutObjectCommand({
@@ -45,15 +47,11 @@ export async function POST(request: NextRequest) {
         })
 
         // Generate the pre-signed URL (valid for 5 minutes)
-        const signedUrl = await getSignedUrl(R2, command, { expiresIn: 300 })
-
-        // Construct the public URL
-        const publicDomain = process.env.R2_PUBLIC_DOMAIN?.replace(/\/$/, '') // Remove trailing slash if present
-        const publicUrl = `${publicDomain}/${key}`
+        const signedUrl = await getSignedUrl(createR2Client(), command, { expiresIn: 300 })
 
         return NextResponse.json({
             uploadUrl: signedUrl,
-            publicUrl: publicUrl,
+            publicUrl: buildR2PublicUrl(key),
             key: key
         })
 

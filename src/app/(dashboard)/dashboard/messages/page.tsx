@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { uploadToR2 } from '@/lib/storage/upload-client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Message, Tag, StepScenario } from '@/types'
@@ -361,23 +362,13 @@ export default function MessagesPage() {
         if (!currentChannelId) return
 
         setUploadingIndex(index)
-        const supabase = createClient()
 
         try {
-            const fileExt = file.name.split('.').pop()
-            const fileName = `${Date.now()}.${fileExt}`
-            const folder = type === 'image' ? 'images' : 'videos'
-            const filePath = `messages/${currentChannelId}/${folder}/${fileName}`
-
-            const { error: uploadError } = await supabase.storage
-                .from('line-assets')
-                .upload(filePath, file)
-
-            if (uploadError) throw uploadError
-
-            const { data: { publicUrl } } = supabase.storage
-                .from('line-assets')
-                .getPublicUrl(filePath)
+            // 配信画像はLINE側から受信者ぶん取得されるため、転送量無料のR2に置く
+            const publicUrl = await uploadToR2(file, currentChannelId, {
+                prefix: 'messages',
+                compress: type === 'image',
+            })
 
             if (type === 'image') {
                 const { width, height } = await getImageDimensions(publicUrl)
@@ -387,7 +378,7 @@ export default function MessagesPage() {
             }
         } catch (error) {
             console.error('アップロードエラー:', error)
-            alert('アップロードに失敗しました')
+            alert(error instanceof Error ? error.message : 'アップロードに失敗しました')
         }
 
         setUploadingIndex(null)

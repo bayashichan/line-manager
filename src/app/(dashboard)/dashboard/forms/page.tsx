@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Form, FormField, FormFieldType, Tag, MessageContent } from '@/types'
+import { uploadToR2 } from '@/lib/storage/upload-client'
 import {
     ClipboardList,
     Plus,
@@ -214,18 +215,16 @@ export default function FormsPage() {
     const handleImageUpload = async (index: number, file: File) => {
         if (!currentChannelId) return
         setUploadingIndex(index)
-        const supabase = createClient()
         try {
-            const fileExt = file.name.split('.').pop()
-            const fileName = `${Date.now()}.${fileExt}`
-            const filePath = `forms/${currentChannelId}/images/${fileName}`
-            const { error: uploadError } = await supabase.storage.from('line-assets').upload(filePath, file)
-            if (uploadError) throw uploadError
-            const { data: { publicUrl } } = supabase.storage.from('line-assets').getPublicUrl(filePath)
+            // 回答完了メッセージの画像もLINE側から都度取得されるため、転送量無料のR2に置く
+            const publicUrl = await uploadToR2(file, currentChannelId, {
+                prefix: 'forms',
+                compress: true,
+            })
             updateCompletionBlock(index, { imageUrl: publicUrl })
         } catch (err) {
             console.error('アップロードエラー:', err)
-            alert('画像のアップロードに失敗しました')
+            alert(err instanceof Error ? err.message : '画像のアップロードに失敗しました')
         }
         setUploadingIndex(null)
     }
