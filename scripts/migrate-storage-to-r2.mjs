@@ -151,49 +151,60 @@ function rewrite(text) {
     return out
 }
 
-async function rewriteDatabase(db) {
-    for (const { table, column } of TEXT_COLUMNS) {
-        const { data, error } = await db.from(table).select(`id, ${column}`)
-        if (error) {
-            console.warn(`\n[${table}] 読み取り失敗: ${error.message}`)
-            continue
-        }
+/** PostgRESTの既定上限(1000件)に当たらないよう、id順にページングして全件読む */
+async function* readAll(db, table, column) {
+    const pageSize = 500
+    let from = 0
 
-        let changed = 0
-        for (const row of data || []) {
-            const current = row[column]
+    for (;;) {
+        const { data, error } = await db
+            .from(table)
+            .select(`id, ${column}`)
+            .order('id')
+            .range(from, from + pageSize - 1)
+
+        if (error) throw new Error(error.message)
+        if (!data || data.length === 0) return
+
+        yield* data
+
+        if (data.length < pageSize) return
+        from += pageSize
+    }
+}
+
+async function rewriteColumn(db, table, column, isJson) {
+    let changed = 0
+
+    try {
+        for await (const row of readAll(db, table, column)) {
+            const current = isJson ? JSON.stringify(row[column]) : row[column]
             if (typeof current !== 'string') continue
+
             const next = rewrite(current)
             if (next === current) continue
 
             changed++
             if (DRY_RUN) continue
-            const { error: upErr } = await db.from(table).update({ [column]: next }).eq('id', row.id)
-            if (upErr) console.warn(`  ${table}/${row.id} の更新失敗: ${upErr.message}`)
+
+            const value = isJson ? JSON.parse(next) : next
+            const { error } = await db.from(table).update({ [column]: value }).eq('id', row.id)
+            if (error) console.warn(`  ${table}/${row.id} の更新失敗: ${error.message}`)
         }
-        console.log(`\n[${table}.${column}] 書き換え ${changed}件${DRY_RUN ? '（dry-run）' : ''}`)
+    } catch (e) {
+        console.warn(`\n[${table}.${column}] 読み取り失敗: ${e.message}`)
+        return
     }
 
+    console.log(`\n[${table}.${column}] 書き換え ${changed}件${DRY_RUN ? '（dry-run）' : ''}`)
+}
+
+async function rewriteDatabase(db) {
+    for (const { table, column } of TEXT_COLUMNS) {
+        await rewriteColumn(db, table, column, false)
+    }
     for (const { table, column } of JSON_COLUMNS) {
-        const { data, error } = await db.from(table).select(`id, ${column}`)
-        if (error) {
-            console.warn(`\n[${table}] 読み取り失敗: ${error.message}`)
-            continue
-        }
-
-        let changed = 0
-        for (const row of data || []) {
-            const current = JSON.stringify(row[column])
-            if (!current) continue
-            const next = rewrite(current)
-            if (next === current) continue
-
-            changed++
-            if (DRY_RUN) continue
-            const { error: upErr } = await db.from(table).update({ [column]: JSON.parse(next) }).eq('id', row.id)
-            if (upErr) console.warn(`  ${table}/${row.id} の更新失敗: ${upErr.message}`)
-        }
-        console.log(`\n[${table}.${column}] 書き換え ${changed}件${DRY_RUN ? '（dry-run）' : ''}`)
+        await rewriteColumn(db, table, column, true)
     }
 }
 
