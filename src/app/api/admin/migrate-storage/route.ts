@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { isR2Configured } from '@/lib/storage/r2'
 import { copyObjects, rewriteDatabase } from '@/lib/storage/migrate'
 
@@ -11,31 +11,68 @@ import { copyObjects, rewriteDatabase } from '@/lib/storage/migrate'
  * アセットを移し、DBに保存済みの公開URLを書き換えるためのもの。
  * Vercel上で動くので、手元にSupabase/R2の認証情報を用意しなくてよい。
  *
- * 認証: CRON_SECRET を `Authorization: Bearer <secret>` で渡す。
+ * 認証はどちらかを満たせばよい:
+ *   a) ダッシュボードにオーナー権限でログイン済みのセッション
+ *      → ブラウザのコンソールから fetch() で叩ける（秘密情報の取り回しが不要）
+ *   b) MIGRATION_SECRET（未設定なら CRON_SECRET）を
+ *      `Authorization: Bearer <secret>` で渡す
+ *
+ * なお CRON_SECRET は QStash に登録済みの予約配信ジョブのヘッダーに
+ * 焼き込まれているため、値を作り直すと予約済みの配信が401で失敗する。
+ * 別の値を使いたい場合は MIGRATION_SECRET を追加すること。
  *
  * リクエスト Body (JSON, 全て optional):
  *   - step: 'copy' | 'rewrite'  … copy=R2への複製（既定）, rewrite=DBのURL書き換え
  *   - dryRun: boolean           … true なら書き込まず件数だけ返す
  *   - limit: number             … copy で1回に処理する最大件数。デフォルト 50、上限 500
  *
- * 使い方:
- *   1) curl -X POST https://<your-domain>/api/admin/migrate-storage \
- *        -H "Authorization: Bearer $CRON_SECRET" \
- *        -H "Content-Type: application/json" \
- *        -d '{"dryRun": true}'
+ * 使い方（ログイン済みのブラウザのコンソールで）:
+ *   await fetch('/api/admin/migrate-storage', {
+ *     method: 'POST',
+ *     headers: { 'Content-Type': 'application/json' },
+ *     body: JSON.stringify({ dryRun: true }),
+ *   }).then(r => r.json())
+ *
+ *   1) 上で件数を確認
  *   2) dryRun を外して実行。remaining が 0 になるまで繰り返す
- *   3) -d '{"step": "rewrite", "dryRun": true}' で件数を確認してから本実行
+ *   3) { step: 'rewrite' } でDBのURLを書き換える
  *   4) 画像表示を確認したら
  *      supabase/migrations/20260921000000_revoke_public_storage_read.sql を適用する
  */
+
+/** ダッシュボードにオーナー権限でログインしているか */
+async function isOwnerSession(): Promise<boolean> {
+    try {
+        const supabase = await createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return false
+
+        const { data } = await supabase
+            .from('channel_members')
+            .select('id')
+            .eq('profile_id', user.id)
+            .eq('role', 'owner')
+            .limit(1)
+
+        return Boolean(data && data.length > 0)
+    } catch {
+        return false
+    }
+}
 
 // ファイルの複製に時間がかかるため上限まで伸ばす（Vercel Proで300秒）
 export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
+    const secret = process.env.MIGRATION_SECRET || process.env.CRON_SECRET
     const authHeader = request.headers.get('authorization')
-    if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-        return NextResponse.json({ error: '認証エラー' }, { status: 401 })
+    const bySecret = Boolean(secret) && authHeader === `Bearer ${secret}`
+
+    if (!bySecret && !(await isOwnerSession())) {
+        return NextResponse.json(
+            { error: '認証エラー（オーナー権限でログインするか、Bearerトークンを渡してください）' },
+            { status: 401 }
+        )
     }
 
     if (!isR2Configured()) {

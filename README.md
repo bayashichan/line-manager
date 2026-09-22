@@ -25,7 +25,11 @@ R2 は egress が無料なのでこちらに統一している。
 - サーバー: `uploadToR2Server()` (`src/lib/storage/r2.ts`)
 
 過去に Supabase Storage へ上げたアセットの移行は
-`POST /api/admin/migrate-storage`（`CRON_SECRET` 認証）で行う。
+`POST /api/admin/migrate-storage` で行う。オーナー権限でログイン済みの
+セッション、または `MIGRATION_SECRET`（未設定なら `CRON_SECRET`）で認証する。
+
+`CRON_SECRET` は QStash に登録済みの予約配信ジョブのヘッダーに焼き込まれて
+いるため、値を作り直すと予約済みの配信が401で失敗する点に注意。
 
 ## セットアップ
 
