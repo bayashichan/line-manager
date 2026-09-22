@@ -6,7 +6,7 @@
 --   配信元は Cloudflare R2（egress無料）へ移したので、Supabase側は公開しない。
 --
 -- 適用タイミング:
---   必ず scripts/migrate-storage-to-r2.mjs で既存アセットをR2へ移し、
+--   必ず POST /api/admin/migrate-storage で既存アセットをR2へ移し（copy → rewrite）、
 --   ダッシュボードで画像が表示されることを確認したあとに実行すること。
 --   先に実行すると、DBに残っている旧URLの画像が表示されなくなる。
 
