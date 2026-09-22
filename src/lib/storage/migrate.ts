@@ -214,3 +214,23 @@ export async function rewriteDatabase(db: Db, dryRun: boolean): Promise<Record<s
 
     return report
 }
+
+/**
+ * Supabase Storage のバケットを非公開にして、CDN経由の配信を止める。
+ * 既存アセットの移行と表示確認を終えたあとに実行すること。
+ *
+ * public=false にすると /object/public/... のパスが使えなくなるので、
+ * これだけで転送量(cached egress)は発生しなくなる。
+ * storage.objects に残る公開読み取りポリシーの削除は
+ * supabase/migrations/20260921000000_revoke_public_storage_read.sql を参照。
+ */
+export async function lockdownPublicRead(db: Db): Promise<Record<string, string>> {
+    const done: Record<string, string> = {}
+
+    for (const bucket of LEGACY_BUCKETS) {
+        const { error } = await db.storage.updateBucket(bucket, { public: false })
+        done[bucket] = error ? `失敗: ${error.message}` : '非公開にしました'
+    }
+
+    return done
+}

@@ -19,6 +19,7 @@ import {
     Eye,
     EyeOff,
     CloudLightning, // Added
+    UploadCloud,
 } from 'lucide-react'
 import { cn, getCookie } from '@/lib/utils'
 
@@ -164,6 +165,9 @@ export default function SettingsPage() {
 
     // DB修復機能
     const [isFixing, setIsFixing] = useState(false)
+    const [isMigrating, setIsMigrating] = useState(false)
+    const [migrateLog, setMigrateLog] = useState<string[]>([])
+    const [isLockingDown, setIsLockingDown] = useState(false)
 
     const handleFixDatabase = async () => {
         if (!confirm('データベースの接続設定と権限を修復しますか？\n（チャット受信などがうまくいかない場合に実行してください）')) return
@@ -192,6 +196,98 @@ export default function SettingsPage() {
             })
         } finally {
             setIsFixing(false)
+        }
+    }
+
+    // 過去にSupabase Storageへ上げた画像・動画をR2へ移す。
+    // 複製はVercelの実行時間に収まるよう小分けにして、残りが0になるまで繰り返す
+    const callMigrate = async (body: Record<string, unknown>) => {
+        const res = await fetch('/api/admin/migrate-storage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || '移行に失敗しました')
+        return data
+    }
+
+    const handleMigrateStorage = async () => {
+        if (!confirm('過去にアップロードした画像・動画をR2へ移し、保存済みのURLを書き換えます。\n何度実行しても問題ありません。実行しますか？')) return
+
+        setIsMigrating(true)
+        setMigrateLog([])
+        const log = (line: string) => setMigrateLog(prev => [...prev, line])
+
+        try {
+            let copied = 0
+
+            for (let i = 0; i < 100; i++) {
+                const result = await callMigrate({ limit: 50 })
+                copied += result.copied
+
+                if (result.failed?.length) {
+                    log(`※ ${result.failed.length}件は複製できませんでした`)
+                }
+
+                if (result.remaining === 0) {
+                    log(`ファイルの複製が完了しました（新規 ${copied}件 / 複製済み ${result.alreadyCopied}件）`)
+                    break
+                }
+
+                // 1件も進まないなら繰り返しても意味がないので止める
+                if (result.copied === 0) {
+                    log(`残り ${result.remaining}件を複製できませんでした。時間をおいて再実行してください`)
+                    break
+                }
+
+                log(`複製中… ${copied}件完了 / 残り ${result.remaining}件`)
+            }
+
+            log('保存済みのURLを書き換えています…')
+            const rewrite = await callMigrate({ step: 'rewrite' })
+            const rewritten = Object.values(rewrite.report || {})
+                .filter((v): v is number => typeof v === 'number')
+                .reduce((a, b) => a + b, 0)
+            log(`完了しました（URL ${rewritten}件を書き換え）`)
+
+            toast({
+                title: '移行完了',
+                description: 'リッチメニューやチャット履歴で画像が表示されるか確認してください。',
+            })
+        } catch (error: any) {
+            log(`エラー: ${error.message}`)
+            toast({
+                title: 'エラー',
+                description: error.message,
+                variant: 'destructive',
+            })
+        } finally {
+            setIsMigrating(false)
+        }
+    }
+
+    // 移行と表示確認が済んだあと、旧保存先を非公開にして転送量の発生を止める
+    const handleLockdownStorage = async () => {
+        if (!confirm('旧い保存先を非公開にします。\n\n必ず先に「移行を実行する」を終えて、画像が表示されることを確認してください。\n確認前に実行すると画像が表示されなくなります。\n\n実行しますか？')) return
+
+        setIsLockingDown(true)
+        try {
+            const result = await callMigrate({ step: 'lockdown' })
+            setMigrateLog(prev => [...prev, result.message])
+            toast({
+                title: '完了',
+                description: '旧い保存先を非公開にしました。通信量の超過は起きなくなります。',
+            })
+        } catch (error: any) {
+            setMigrateLog(prev => [...prev, `エラー: ${error.message}`])
+            toast({
+                title: 'エラー',
+                description: error.message,
+                variant: 'destructive',
+            })
+        } finally {
+            setIsLockingDown(false)
         }
     }
 
@@ -489,6 +585,74 @@ export default function SettingsPage() {
                             </>
                         )}
                     </Button>
+                </CardContent>
+            </Card>
+
+            {/* ストレージ移行 */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                        <UploadCloud className="w-5 h-5" />
+                        画像・動画の保存先を移行
+                    </CardTitle>
+                    <CardDescription>
+                        過去にアップロードした画像・動画を、転送量のかからない配信元へ移します。
+                        LINEへの配信で通信量を使い切ってサービスが止まるのを防ぐための作業です。
+                        何度実行しても問題ありません。
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <Button
+                            onClick={handleMigrateStorage}
+                            disabled={isMigrating || isLockingDown}
+                            variant="outline"
+                            className="w-full sm:w-auto"
+                        >
+                            {isMigrating ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    移行中...
+                                </>
+                            ) : (
+                                <>
+                                    <UploadCloud className="mr-2 h-4 w-4" />
+                                    1. 移行を実行する
+                                </>
+                            )}
+                        </Button>
+
+                        <Button
+                            onClick={handleLockdownStorage}
+                            disabled={isMigrating || isLockingDown}
+                            variant="outline"
+                            className="w-full sm:w-auto border-yellow-200 hover:bg-yellow-100 hover:text-yellow-900"
+                        >
+                            {isLockingDown ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    処理中...
+                                </>
+                            ) : (
+                                <>
+                                    <Lock className="mr-2 h-4 w-4" />
+                                    2. 旧い保存先を閉じる
+                                </>
+                            )}
+                        </Button>
+                    </div>
+
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                        1 を実行したあと、リッチメニューやチャット履歴で画像が表示されることを確認してから 2 を実行してください。
+                    </p>
+
+                    {migrateLog.length > 0 && (
+                        <div className="rounded-md bg-slate-50 dark:bg-slate-900 p-3 space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                            {migrateLog.map((line, i) => (
+                                <p key={i}>{line}</p>
+                            ))}
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 

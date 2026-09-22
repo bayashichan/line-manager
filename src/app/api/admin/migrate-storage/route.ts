@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { isR2Configured } from '@/lib/storage/r2'
-import { copyObjects, rewriteDatabase } from '@/lib/storage/migrate'
+import { copyObjects, lockdownPublicRead, rewriteDatabase } from '@/lib/storage/migrate'
 
 /**
  * Supabase Storage → R2 移行 (ワンショット管理用エンドポイント)
@@ -22,7 +22,7 @@ import { copyObjects, rewriteDatabase } from '@/lib/storage/migrate'
  * 別の値を使いたい場合は MIGRATION_SECRET を追加すること。
  *
  * リクエスト Body (JSON, 全て optional):
- *   - step: 'copy' | 'rewrite'  … copy=R2への複製（既定）, rewrite=DBのURL書き換え
+ *   - step: 'copy' | 'rewrite' | 'lockdown'\n *       copy     … R2への複製（既定）\n *       rewrite  … DBに保存済みのURLの書き換え\n *       lockdown … Supabase Storage を非公開にする（表示確認のあとに）
  *   - dryRun: boolean           … true なら書き込まず件数だけ返す
  *   - limit: number             … copy で1回に処理する最大件数。デフォルト 50、上限 500
  *
@@ -89,13 +89,31 @@ export async function POST(request: NextRequest) {
         // body 省略可
     }
 
-    const step = body.step === 'rewrite' ? 'rewrite' : 'copy'
+    const step =
+        body.step === 'rewrite' ? 'rewrite' : body.step === 'lockdown' ? 'lockdown' : 'copy'
     const dryRun = body.dryRun === true
     const limit = Math.min(Math.max(body.limit ?? 50, 1), 500)
 
     const supabase = createAdminClient()
 
     try {
+        if (step === 'lockdown') {
+            if (dryRun) {
+                return NextResponse.json({
+                    step,
+                    dryRun: true,
+                    message: 'dryRun では実行しません。閉じるには dryRun を外してください',
+                })
+            }
+
+            const done = await lockdownPublicRead(supabase)
+            return NextResponse.json({
+                step,
+                done,
+                message: 'Supabase Storage を非公開にしました。これで転送量は発生しません',
+            })
+        }
+
         if (step === 'rewrite') {
             const report = await rewriteDatabase(supabase, dryRun)
             return NextResponse.json({
