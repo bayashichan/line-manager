@@ -24,6 +24,9 @@ R2 は egress が無料なのでこちらに統一している。
 - クライアント: `uploadToR2()` (`src/lib/storage/upload-client.ts`)
 - サーバー: `uploadToR2Server()` (`src/lib/storage/r2.ts`)
 
+過去に Supabase Storage へ上げたアセットの移行は
+`POST /api/admin/migrate-storage`（`CRON_SECRET` 認証）で行う。
+
 ## セットアップ
 
 ### 1. 環境変数の設定
