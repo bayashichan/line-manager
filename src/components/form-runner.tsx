@@ -214,6 +214,9 @@ export function FormRunner({ formId }: { formId: string | null }) {
                                 {field.label}
                                 {field.required && <span className="text-red-500 ml-1">*</span>}
                             </label>
+                            {field.description && (
+                                <p className="-mt-0.5 mb-2 text-xs text-slate-500 whitespace-pre-wrap leading-relaxed">{field.description}</p>
+                            )}
                             <FieldInput
                                 field={field}
                                 value={answers[field.id]}

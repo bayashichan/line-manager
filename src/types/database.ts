@@ -200,6 +200,7 @@ export interface FormField {
     label: string
     type: FormFieldType
     required: boolean
+    description?: string // 質問の下に表示する補足説明
     placeholder?: string
     options?: string[] // select / radio / checkbox 用
 }
