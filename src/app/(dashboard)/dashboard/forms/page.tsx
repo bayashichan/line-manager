@@ -267,6 +267,7 @@ export default function FormsPage() {
         const cleanFields: FormField[] = fFields.map((f) => ({
             ...f,
             label: f.label.trim(),
+            description: f.description?.trim() || undefined,
             options: OPTION_TYPES.includes(f.type)
                 ? (f.options || []).map((o) => o.trim()).filter(Boolean)
                 : undefined,
@@ -446,6 +447,17 @@ export default function FormsPage() {
                                                 ))}
                                             </select>
                                         </div>
+                                    </div>
+
+                                    {/* 質問の説明文 */}
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs text-slate-500">質問の説明文（任意）</Label>
+                                        <textarea
+                                            value={field.description || ''}
+                                            onChange={(e) => updateField(index, { description: e.target.value })}
+                                            placeholder="質問の下に表示する補足説明（例: 日中つながりやすい番号をご入力ください）"
+                                            className="w-full h-16 px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+                                        />
                                     </div>
 
                                     {/* プレースホルダー（自由入力系のみ） */}
