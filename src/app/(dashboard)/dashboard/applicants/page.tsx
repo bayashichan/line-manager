@@ -127,6 +127,8 @@ export default function ApplicantsPage() {
         const q = searchQuery.toLowerCase()
         return (
             (a.display_name?.toLowerCase() || '').includes(q) ||
+            (a.internal_name?.toLowerCase() || '').includes(q) ||
+            (a.tag_names || []).some(name => name.toLowerCase().includes(q)) ||
             a.line_user_id.toLowerCase().includes(q) ||
             a.source.toLowerCase().includes(q)
         )
@@ -143,9 +145,11 @@ export default function ApplicantsPage() {
     }
 
     const handleExportCSV = () => {
-        const headers = ['LINE表示名', 'LINE userId', '申込元', '友だち', '申込日時', '連携日時']
+        const headers = ['LINE表示名', '管理用ネーム', 'タグ', 'LINE userId', '申込元', '友だち', '申込日時', '連携日時']
         const rows = filtered.map(a => [
             a.display_name || '',
+            a.internal_name || '',
+            (a.tag_names || []).join(', '),
             a.line_user_id,
             a.source,
             a.is_friend ? '友だち' : '未友だち',
@@ -232,7 +236,7 @@ export default function ApplicantsPage() {
                 <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <Input
-                        placeholder="表示名・userId・申込元で検索..."
+                        placeholder="表示名・管理用ネーム・タグ・userId・申込元で検索..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="pl-10"
@@ -246,9 +250,16 @@ export default function ApplicantsPage() {
                     <Card key={applicant.id}>
                         <CardContent className="p-4">
                             <div className="flex items-start justify-between gap-2">
-                                <h3 className="font-medium truncate">
-                                    {applicant.display_name || '名前なし'}
-                                </h3>
+                                <div className="min-w-0">
+                                    <h3 className="font-medium truncate">
+                                        {applicant.internal_name || applicant.display_name || '名前なし'}
+                                    </h3>
+                                    {applicant.internal_name && applicant.display_name && applicant.internal_name !== applicant.display_name && (
+                                        <p className="text-sm text-slate-500 truncate">
+                                            LINE名: {applicant.display_name}
+                                        </p>
+                                    )}
+                                </div>
                                 {applicant.is_friend && applicant.linked_line_user_id && (
                                     <Button
                                         variant="ghost"
@@ -289,6 +300,15 @@ export default function ApplicantsPage() {
                                 >
                                     {applicant.is_friend ? '友だち' : '未友だち'}
                                 </span>
+                                {(applicant.tag_names || []).map(name => (
+                                    <span
+                                        key={name}
+                                        title={applicant.profile_applied_at ? 'タグ付け済み' : '友だち追加後にタグ付けされます'}
+                                        className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                                    >
+                                        {name}
+                                    </span>
+                                ))}
                             </div>
 
                             <p className="text-xs text-slate-400 mt-3">

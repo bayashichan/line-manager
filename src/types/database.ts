@@ -275,6 +275,9 @@ export interface Applicant {
     is_friend: boolean
     linked_line_user_id: string | null
     applied_at: string | null
+    internal_name: string | null        // 友だちの管理用ネームに登録する名前（出展名など）
+    tag_names: string[]                 // 友だちに付与するタグ名
+    profile_applied_at: string | null   // 管理用ネーム・タグを友だちへ反映した日時。NULL = 未反映
     created_at: string
     updated_at: string
 }

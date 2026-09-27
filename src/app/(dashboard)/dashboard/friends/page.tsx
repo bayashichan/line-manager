@@ -463,7 +463,7 @@ export default function FriendsPage() {
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center justify-between gap-2">
                                             <h3 className="font-medium truncate">
-                                                {friend.display_name || friend.internal_name || '名前なし'}
+                                                {friend.internal_name || friend.display_name || '名前なし'}
                                                 {friend.is_blocked && (
                                                     <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300 align-middle">
                                                         ブロック中
@@ -478,7 +478,7 @@ export default function FriendsPage() {
                                         </div>
                                         {friend.internal_name && friend.display_name && friend.internal_name !== friend.display_name && (
                                             <p className="text-sm text-slate-500 truncate">
-                                                管理名: {friend.internal_name}
+                                                LINE名: {friend.display_name}
                                             </p>
                                         )}
                                         <p className="text-xs text-slate-400 mt-1">
@@ -1319,7 +1319,10 @@ function FriendDetailModal({ friend, tags, onClose, onUpdate }: FriendDetailModa
                             </div>
                         )}
                         <div className="flex-1 min-w-0">
-                            <CardTitle className="truncate text-lg sm:text-xl">{friend.display_name || '名前なし'}</CardTitle>
+                            <CardTitle className="truncate text-lg sm:text-xl">{friend.internal_name || friend.display_name || '名前なし'}</CardTitle>
+                            {friend.internal_name && friend.display_name && friend.internal_name !== friend.display_name && (
+                                <p className="text-sm text-slate-500 truncate mt-1">LINE名: {friend.display_name}</p>
+                            )}
                             <p className="text-xs sm:text-sm text-slate-500 truncate mt-1">
                                 {formatDateTime(friend.followed_at)}に追加
                             </p>
