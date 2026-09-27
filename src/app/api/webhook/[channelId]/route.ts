@@ -6,6 +6,7 @@ import type { AutoReply } from '@/types'
 import { calculateNextSendAt } from '@/lib/utils'
 import type { Channel } from '@/types'
 import { sendMetaCapiEvent } from '@/lib/meta-capi'
+import { applyPendingApplicantProfiles } from '@/lib/applicants'
 
 interface WebhookEvent {
     type: string
@@ -225,6 +226,17 @@ async function handleFollow(
         }
 
         console.log(`友だち追加/更新: ${profile.displayName} (${userId}) → DB ID: ${upsertedUser.id}`)
+
+        // ====================================================================
+        // STEP 2.2: 申込フォームの管理用ネーム・タグを反映
+        // 未友だちで申し込んだ人が友だち追加したときに、控えておいた出展名・タグを付ける。
+        // 反映済みの申込は対象外なので、既存の友だちでは何もしない。
+        // ====================================================================
+        try {
+            await applyPendingApplicantProfiles(supabase, channel.id, userId, upsertedUser.id)
+        } catch (err) {
+            console.error(`申込者の管理用ネーム・タグの反映エラー (userId: ${userId}):`, err)
+        }
 
         // ====================================================================
         // STEP 2.5: line_sessions照合 → ad_conversions事前生成

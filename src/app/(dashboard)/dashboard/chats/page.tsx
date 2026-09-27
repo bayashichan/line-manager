@@ -58,9 +58,9 @@ function ChatsPage() {
     const messagesEndRef = useRef<HTMLDivElement>(null)
     const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
 
-    // 表示名取得ヘルパー (LINE名を優先、なければ管理名)
+    // 表示名取得ヘルパー (管理用ネームを優先、なければLINE名)
     const getDisplayName = (user: ChatUser) => {
-        return user.display_name || user.internal_name
+        return user.internal_name || user.display_name
     }
 
     // 初期ロード：チャンネルIDと友だちリスト取得
