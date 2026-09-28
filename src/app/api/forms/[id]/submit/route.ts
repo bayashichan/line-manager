@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
-import type { FormField, MessageContent } from '@/types'
+import type { CompletionReplyStatus, FormField, MessageContent } from '@/types'
+
+type CompletionReplyResult = {
+    status: Exclude<CompletionReplyStatus, 'pending'>
+    error: string | null
+}
+
+// 失敗理由として保存するエラー本文の上限（LINE APIのエラーは通常これより短い）
+const ERROR_DETAIL_MAX = 1000
 
 /**
  * 申込フォーム送信
@@ -15,7 +23,7 @@ import type { FormField, MessageContent } from '@/types'
  *  1. アクセストークンを検証してLINE userIdを確定
  *  2. 必須項目のバリデーション
  *  3. 回答を保存
- *  4. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）
+ *  4. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
  *  5. 完了タグを付与し、必要ならリッチメニューを再判定
  */
 export async function POST(
@@ -102,15 +110,21 @@ export async function POST(
         // --------------------------------------------------------------------
         // 回答を保存
         // --------------------------------------------------------------------
-        const { error: insertError } = await supabase.from('form_responses').insert({
-            form_id: form.id,
-            channel_id: form.channel_id,
-            line_user_id: lineUser?.id ?? null,
-            line_user_id_raw: userId,
-            answers: cleanAnswers,
-        })
+        // 自動返信の送信結果の列はここでは指定しない（DBの既定値で 'pending' になる）。
+        // マイグレーション適用前にデプロイされても、回答の保存は失敗させないため
+        const { data: response, error: insertError } = await supabase
+            .from('form_responses')
+            .insert({
+                form_id: form.id,
+                channel_id: form.channel_id,
+                line_user_id: lineUser?.id ?? null,
+                line_user_id_raw: userId,
+                answers: cleanAnswers,
+            })
+            .select('id')
+            .single()
 
-        if (insertError) {
+        if (insertError || !response) {
             console.error('回答保存エラー:', insertError)
             return NextResponse.json({ error: '回答の保存に失敗しました' }, { status: 500 })
         }
@@ -123,23 +137,39 @@ export async function POST(
             .single()
 
         // --------------------------------------------------------------------
-        // 完了時の自動返信を送信
+        // 完了時の自動返信を送信し、結果を回答に記録する（管理画面で確認するため）
         // --------------------------------------------------------------------
-        if (channel?.channel_access_token) {
-            const lineClient = new LineClient(channel.channel_access_token)
-            const name = lineUser?.display_name || displayName || '友だち'
-            const messages = buildCompletionMessages(
-                (form.completion_message ?? []) as MessageContent[],
-                name
-            )
-            if (messages.length > 0) {
-                try {
-                    await lineClient.pushMessage(userId, messages)
-                } catch (err) {
-                    // 自動返信の失敗は申込自体を失敗にはしない（回答は保存済み）
-                    console.error(`完了自動返信エラー (userId: ${userId}):`, err)
-                }
+        const messages = buildCompletionMessages(
+            (form.completion_message ?? []) as MessageContent[],
+            lineUser?.display_name || displayName || '友だち'
+        )
+        let replyResult: CompletionReplyResult
+        if (messages.length === 0) {
+            replyResult = { status: 'skipped', error: '自動返信メッセージが設定されていません' }
+        } else if (!channel?.channel_access_token) {
+            replyResult = { status: 'skipped', error: 'LINE公式アカウントのアクセストークンが設定されていません' }
+        } else {
+            try {
+                await new LineClient(channel.channel_access_token).pushMessage(userId, messages)
+                replyResult = { status: 'sent', error: null }
+            } catch (err) {
+                // 自動返信の失敗は申込自体を失敗にはしない（回答は保存済み）
+                console.error(`完了自動返信エラー (userId: ${userId}):`, err)
+                const detail = err instanceof Error ? err.message : String(err)
+                replyResult = { status: 'failed', error: detail.slice(0, ERROR_DETAIL_MAX) }
             }
+        }
+
+        const { error: replyLogError } = await supabase
+            .from('form_responses')
+            .update({
+                completion_reply_status: replyResult.status,
+                completion_reply_error: replyResult.error,
+                completion_reply_at: new Date().toISOString(),
+            })
+            .eq('id', response.id)
+        if (replyLogError) {
+            console.error(`完了自動返信の結果を記録できませんでした (responseId: ${response.id}):`, replyLogError)
         }
 
         // --------------------------------------------------------------------

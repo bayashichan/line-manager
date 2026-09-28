@@ -219,6 +219,15 @@ export interface Form {
     updated_at: string
 }
 
+/**
+ * 申込完了時の自動返信の送信結果。
+ * - pending: 送信処理中。このまま残っていれば途中で止まった（結果不明）
+ * - sent:    LINEが送信を受け付けた
+ * - failed:  送信に失敗した（理由は completion_reply_error）
+ * - skipped: 送らなかった（自動返信が未設定など。理由は completion_reply_error）
+ */
+export type CompletionReplyStatus = 'pending' | 'sent' | 'failed' | 'skipped'
+
 export interface FormResponse {
     id: string
     form_id: string
@@ -226,6 +235,9 @@ export interface FormResponse {
     line_user_id: string | null
     line_user_id_raw: string | null
     answers: Record<string, string | string[]>
+    completion_reply_status: CompletionReplyStatus | null // NULL = 記録なし（機能追加前の回答）
+    completion_reply_error: string | null
+    completion_reply_at: string | null
     created_at: string
 }
 

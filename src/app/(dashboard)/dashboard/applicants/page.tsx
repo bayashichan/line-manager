@@ -9,6 +9,12 @@ import { Button, Input, Card, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Applicant, Form, FormField, FormResponse, LineUser } from '@/types'
 import {
+    CompletionReplyBadge,
+    completionReplyDetail,
+    completionReplyLabel,
+    isCompletionReplyUndelivered,
+} from '@/components/completion-reply-status'
+import {
     Search,
     Loader2,
     AlertCircle,
@@ -329,12 +335,13 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
         : responses
 
     const notFriendCount = responses.filter(r => friendStatusOf(userOf(r)) !== 'friend').length
+    const undeliveredCount = responses.filter(isCompletionReplyUndelivered).length
 
     const handleExportCSV = () => {
         if (!form) return
 
         const escape = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
-        const headers = ['申込日時', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', ...form.fields.map(f => f.label)]
+        const headers = ['申込日時', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', '自動返信', '自動返信の理由', ...form.fields.map(f => f.label)]
         const rows = filtered.map(r => {
             const user = userOf(r)
             return [
@@ -343,6 +350,8 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                 user?.internal_name || '',
                 FRIEND_STATUS_LABELS[friendStatusOf(user)],
                 r.line_user_id_raw || '',
+                completionReplyLabel(r),
+                completionReplyDetail(r) || '',
                 ...form.fields.map(f => answerText(r, f.id)),
             ]
         })
@@ -442,6 +451,16 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                 </div>
             )}
 
+            {undeliveredCount > 0 && (
+                <div className="flex items-start gap-2 px-4 py-3 rounded-md bg-red-50 text-red-700 text-sm dark:bg-red-900/20 dark:text-red-300">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                        自動返信が届いていない可能性がある申込が {undeliveredCount} 件あります。
+                        「自動返信: 失敗」「自動返信: 結果不明」の申込は、理由を確認のうえ個別にご連絡ください。
+                    </span>
+                </div>
+            )}
+
             {loadError && (
                 <div className="flex items-center gap-2 px-4 py-3 rounded-md bg-red-50 text-red-700 text-sm dark:bg-red-900/20 dark:text-red-300">
                     <AlertCircle className="w-4 h-4 shrink-0" />
@@ -471,6 +490,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                             const expanded = expandedIds.has(r.id)
                             const shownFields = expanded ? detailFields : detailFields.slice(0, SUMMARY_FIELD_COUNT)
                             const hiddenCount = detailFields.length - SUMMARY_FIELD_COUNT
+                            const replyDetail = completionReplyDetail(r)
 
                             return (
                                 <div key={r.id} className="p-4 flex items-start gap-3">
@@ -496,6 +516,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                                     <span className={cn('px-2 py-0.5 text-xs rounded-full', FRIEND_STATUS_CLASSES[status])}>
                                                         {FRIEND_STATUS_LABELS[status]}
                                                     </span>
+                                                    <CompletionReplyBadge record={r} />
                                                 </div>
                                                 <p className="text-xs text-slate-400 mt-0.5">
                                                     {formatDateTime(r.created_at)} 申込
@@ -503,6 +524,14 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                                         <span className="text-slate-500"> ・ LINE: {lineName}</span>
                                                     )}
                                                 </p>
+                                                {replyDetail && (
+                                                    <p className={cn(
+                                                        'text-xs mt-0.5 break-words',
+                                                        isCompletionReplyUndelivered(r) ? 'text-red-600 dark:text-red-400' : 'text-slate-500'
+                                                    )}>
+                                                        自動返信: {replyDetail}
+                                                    </p>
+                                                )}
                                             </div>
                                             {status === 'friend' && user && (
                                                 <Button
