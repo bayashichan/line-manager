@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
-import type { CompletionReplyStatus, FormField, MessageContent } from '@/types'
+import { DEFAULT_WAITLIST_MESSAGE } from '@/lib/forms/capacity'
+import type { CompletionReplyStatus, Form, FormEntryStatus, FormField, MessageContent } from '@/types'
 
 type CompletionReplyResult = {
     status: Exclude<CompletionReplyStatus, 'pending'>
@@ -10,6 +11,10 @@ type CompletionReplyResult = {
 
 // 失敗理由として保存するエラー本文の上限（LINE APIのエラーは通常これより短い）
 const ERROR_DETAIL_MAX = 1000
+
+// 締切（close）設定のフォームが満席のとき、DBのトリガーが保存を拒否するメッセージ
+// （supabase/migrations/20260929000000_add_form_capacity.sql）
+const FORM_FULL_ERROR = 'FORM_FULL'
 
 /**
  * 申込フォーム送信
@@ -22,9 +27,11 @@ const ERROR_DETAIL_MAX = 1000
  * 処理:
  *  1. アクセストークンを検証してLINE userIdを確定
  *  2. 必須項目のバリデーション
- *  3. 回答を保存
+ *  3. 回答を保存（残席設定がオンなら、DBのトリガーが定員から申込/キャンセル待ちを決める。
+ *     締切設定で満席なら保存されず 409 を返す）
  *  4. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
- *  5. 完了タグを付与し、必要ならリッチメニューを再判定
+ *     キャンセル待ちならキャンセル待ち用の自動返信を送る
+ *  5. 完了タグ（キャンセル待ちならキャンセル待ち用のタグ）を付与し、必要ならリッチメニューを再判定
  */
 export async function POST(
     request: NextRequest,
@@ -47,15 +54,17 @@ export async function POST(
         // --------------------------------------------------------------------
         // フォーム定義を取得
         // --------------------------------------------------------------------
-        const { data: form, error: formError } = await supabase
+        // 列を指定しない: 残席設定の列はマイグレーション適用前には無く、指定すると取得ごと失敗する
+        const { data: formData, error: formError } = await supabase
             .from('forms')
-            .select('id, channel_id, fields, completion_message, completion_tag_ids, is_active')
+            .select('*')
             .eq('id', id)
             .single()
 
-        if (formError || !form) {
+        if (formError || !formData) {
             return NextResponse.json({ error: 'フォームが見つかりません' }, { status: 404 })
         }
+        const form = formData as Form
         if (!form.is_active) {
             return NextResponse.json({ error: 'このフォームは現在受付を停止しています' }, { status: 403 })
         }
@@ -111,6 +120,7 @@ export async function POST(
         // 回答を保存
         // --------------------------------------------------------------------
         // 自動返信の送信結果の列はここでは指定しない（DBの既定値で 'pending' になる）。
+        // 申込状態(entry_status)も指定しない（DBのトリガーが定員から決める）。
         // マイグレーション適用前にデプロイされても、回答の保存は失敗させないため
         const { data: response, error: insertError } = await supabase
             .from('form_responses')
@@ -121,9 +131,15 @@ export async function POST(
                 line_user_id_raw: userId,
                 answers: cleanAnswers,
             })
-            .select('id')
+            .select('*')
             .single()
 
+        if (insertError?.message === FORM_FULL_ERROR) {
+            return NextResponse.json(
+                { error: '定員に達したため、お申し込みの受付を終了しました', full: true },
+                { status: 409 }
+            )
+        }
         if (insertError || !response) {
             console.error('回答保存エラー:', insertError)
             return NextResponse.json({ error: '回答の保存に失敗しました' }, { status: 500 })
@@ -136,11 +152,20 @@ export async function POST(
             .eq('id', form.channel_id)
             .single()
 
+        // マイグレーション適用前は列が無いので、通常の申込として扱う
+        const entryStatus: FormEntryStatus =
+            response.entry_status === 'waitlisted' ? 'waitlisted' : 'confirmed'
+        const waitlisted = entryStatus === 'waitlisted'
+
         // --------------------------------------------------------------------
         // 完了時の自動返信を送信し、結果を回答に記録する（管理画面で確認するため）
+        // キャンセル待ちには「申込完了」の文面ではなく、キャンセル待ち用の文面を送る
         // --------------------------------------------------------------------
+        const completionContent: MessageContent[] = waitlisted
+            ? [{ type: 'text', text: form.waitlist_message?.trim() || DEFAULT_WAITLIST_MESSAGE }]
+            : (form.completion_message ?? [])
         const messages = buildCompletionMessages(
-            (form.completion_message ?? []) as MessageContent[],
+            completionContent,
             lineUser?.display_name || displayName || '友だち'
         )
         let replyResult: CompletionReplyResult
@@ -174,8 +199,9 @@ export async function POST(
 
         // --------------------------------------------------------------------
         // 完了タグ付与＋リッチメニュー再判定
+        // キャンセル待ちには完了タグではなく、キャンセル待ち用のタグを付ける
         // --------------------------------------------------------------------
-        const tagIds = (form.completion_tag_ids ?? []) as string[]
+        const tagIds = (waitlisted ? form.waitlist_tag_ids : form.completion_tag_ids) ?? []
         if (lineUser?.id && tagIds.length > 0) {
             try {
                 const tagInserts = tagIds.map((tagId) => ({
@@ -193,7 +219,7 @@ export async function POST(
             }
         }
 
-        return NextResponse.json({ success: true })
+        return NextResponse.json({ success: true, entryStatus })
     } catch (error) {
         console.error('フォーム送信エラー:', error)
         return NextResponse.json({ error: '内部サーバーエラー' }, { status: 500 })

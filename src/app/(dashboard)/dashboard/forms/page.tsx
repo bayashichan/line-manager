@@ -4,8 +4,9 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
-import type { Form, FormField, FormFieldType, FormResponse, Tag, MessageContent } from '@/types'
+import type { Form, FormEntryStatus, FormField, FormFieldType, FormFullAction, FormResponse, Tag, MessageContent } from '@/types'
 import { uploadToR2 } from '@/lib/storage/upload-client'
+import { computeAvailability, DEFAULT_WAITLIST_MESSAGE, FEW_SEATS_THRESHOLD } from '@/lib/forms/capacity'
 import { CompletionReplyBadge, completionReplyDetail, completionReplyLabel } from '@/components/completion-reply-status'
 import {
     ClipboardList,
@@ -25,6 +26,7 @@ import {
     Eye,
     Link as LinkIcon,
     Download,
+    Armchair,
 } from 'lucide-react'
 
 // 完了メッセージ用ブロック（テキスト/画像）
@@ -57,6 +59,8 @@ export default function FormsPage() {
     const [forms, setForms] = useState<Form[]>([])
     const [tags, setTags] = useState<Tag[]>([])
     const [responseCounts, setResponseCounts] = useState<Record<string, number>>({})
+    // キャンセル待ちの件数（残席設定がオンのフォームのみ集計）
+    const [waitlistCounts, setWaitlistCounts] = useState<Record<string, number>>({})
     const [loading, setLoading] = useState(true)
     const [currentChannelId, setCurrentChannelId] = useState<string | null>(null)
 
@@ -77,6 +81,12 @@ export default function FormsPage() {
     const [fCompletion, setFCompletion] = useState<CompletionBlock[]>([{ type: 'text', text: '' }])
     const [fTagIds, setFTagIds] = useState<string[]>([])
     const [fActive, setFActive] = useState(true)
+    // 残席設定
+    const [fCapacityEnabled, setFCapacityEnabled] = useState(false)
+    const [fCapacity, setFCapacity] = useState('')
+    const [fFullAction, setFFullAction] = useState<FormFullAction>('waitlist')
+    const [fWaitlistMessage, setFWaitlistMessage] = useState('')
+    const [fWaitlistTagIds, setFWaitlistTagIds] = useState<string[]>([])
 
     const liffId = process.env.NEXT_PUBLIC_FORM_LIFF_ID
 
@@ -121,21 +131,36 @@ export default function FormsPage() {
             .eq('channel_id', channelId)
         if (tagsData) setTags(tagsData)
 
-        // 回答数を集計
+        // 回答数を集計（残席設定がオンのフォームはキャンセル待ちの件数も数え、残席を出す）
         if (formsData && formsData.length > 0) {
             const counts: Record<string, number> = {}
+            const waitlisted: Record<string, number> = {}
             await Promise.all(
-                formsData.map(async (f) => {
+                (formsData as Form[]).map(async (f) => {
                     const { count } = await supabase
                         .from('form_responses')
                         .select('id', { count: 'exact', head: true })
                         .eq('form_id', f.id)
                     counts[f.id] = count || 0
+
+                    if (f.capacity_enabled) {
+                        const { count: waitCount } = await supabase
+                            .from('form_responses')
+                            .select('id', { count: 'exact', head: true })
+                            .eq('form_id', f.id)
+                            .eq('entry_status', 'waitlisted')
+                        waitlisted[f.id] = waitCount || 0
+                    }
                 })
             )
             setResponseCounts(counts)
+            setWaitlistCounts(waitlisted)
         }
     }
+
+    // 申込数（キャンセル待ちを除く）
+    const confirmedCountOf = (formId: string) =>
+        (responseCounts[formId] ?? 0) - (waitlistCounts[formId] ?? 0)
 
     const resetForm = () => {
         setFName('')
@@ -145,6 +170,11 @@ export default function FormsPage() {
         setFCompletion([{ type: 'text', text: '' }])
         setFTagIds([])
         setFActive(true)
+        setFCapacityEnabled(false)
+        setFCapacity('')
+        setFFullAction('waitlist')
+        setFWaitlistMessage('')
+        setFWaitlistTagIds([])
         setIsEditing(false)
         setEditingId(null)
     }
@@ -164,6 +194,11 @@ export default function FormsPage() {
         setFCompletion(completionToBlocks(form.completion_message))
         setFTagIds(form.completion_tag_ids || [])
         setFActive(form.is_active)
+        setFCapacityEnabled(!!form.capacity_enabled)
+        setFCapacity(form.capacity ? String(form.capacity) : '')
+        setFFullAction(form.full_action === 'close' ? 'close' : 'waitlist')
+        setFWaitlistMessage(form.waitlist_message || '')
+        setFWaitlistTagIds(form.waitlist_tag_ids || [])
         setIsEditing(true)
         if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
     }
@@ -233,6 +268,15 @@ export default function FormsPage() {
     const toggleTag = (tagId: string) => {
         setFTagIds((prev) => (prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]))
     }
+    const toggleWaitlistTag = (tagId: string) => {
+        setFWaitlistTagIds((prev) => (prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]))
+    }
+
+    // 定員は1以上の整数。入力途中や不正な値は null
+    const parsedCapacity = (): number | null => {
+        const n = Number(fCapacity)
+        return Number.isInteger(n) && n >= 1 ? n : null
+    }
 
     const buildCompletionContent = (): MessageContent[] => {
         return fCompletion
@@ -256,6 +300,7 @@ export default function FormsPage() {
         if (fFields.some((f) => !f.label.trim())) return false
         // 選択系は選択肢が1つ以上必要
         if (fFields.some((f) => OPTION_TYPES.includes(f.type) && (!f.options || f.options.filter((o) => o.trim()).length === 0))) return false
+        if (fCapacityEnabled && parsedCapacity() === null) return false
         return true
     }
 
@@ -283,6 +328,12 @@ export default function FormsPage() {
             completion_message: buildCompletionContent(),
             completion_tag_ids: fTagIds.length > 0 ? fTagIds : null,
             is_active: fActive,
+            // オフにしても定員の数値は残しておく（再度オンにしたとき入力し直さなくて済むように）
+            capacity_enabled: fCapacityEnabled,
+            capacity: parsedCapacity(),
+            full_action: fFullAction,
+            waitlist_message: fWaitlistMessage.trim() || null,
+            waitlist_tag_ids: fWaitlistTagIds.length > 0 ? fWaitlistTagIds : null,
         }
 
         try {
@@ -616,22 +667,120 @@ export default function FormsPage() {
                                 <TagIcon className="w-4 h-4" />
                                 完了時に付与するタグ（任意）
                             </Label>
-                            <div className="flex flex-wrap gap-2">
-                                {tags.map((tag) => (
-                                    <button
-                                        key={tag.id}
-                                        onClick={() => toggleTag(tag.id)}
-                                        className={cn(
-                                            'px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
-                                            fTagIds.includes(tag.id) ? 'text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                            <TagPicker tags={tags} selectedIds={fTagIds} onToggle={toggleTag} />
+                        </div>
+
+                        {/* 残席設定 */}
+                        <div className="space-y-3">
+                            <Label className="text-base flex items-center gap-2">
+                                <Armchair className="w-4 h-4" />
+                                残席設定
+                            </Label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={fCapacityEnabled}
+                                    onChange={(e) => setFCapacityEnabled(e.target.checked)}
+                                    className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                />
+                                <span className="text-sm">定員を設定する（フォームに残席数を表示し、満席になったら自動で切り替えます）</span>
+                            </label>
+
+                            {fCapacityEnabled && (
+                                <div className="p-3 sm:p-4 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-4">
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs text-slate-500">定員*</Label>
+                                        <div className="flex items-center gap-2">
+                                            <Input
+                                                type="number"
+                                                inputMode="numeric"
+                                                min={1}
+                                                step={1}
+                                                value={fCapacity}
+                                                onChange={(e) => setFCapacity(e.target.value)}
+                                                placeholder="例: 20"
+                                                className="w-32"
+                                            />
+                                            <span className="text-sm text-slate-600 dark:text-slate-300">席</span>
+                                        </div>
+                                        {fCapacity !== '' && parsedCapacity() === null && (
+                                            <p className="text-xs text-red-500">1以上の整数で入力してください</p>
                                         )}
-                                        style={fTagIds.includes(tag.id) ? { backgroundColor: tag.color } : {}}
-                                    >
-                                        {tag.name}
-                                    </button>
-                                ))}
-                                {tags.length === 0 && <p className="text-sm text-slate-500">タグがありません（タグ管理で作成できます）</p>}
-                            </div>
+                                        {editingId && parsedCapacity() !== null && (
+                                            <p className="text-xs text-slate-500">
+                                                現在の申込 {confirmedCountOf(editingId)} 件（残り {Math.max(0, parsedCapacity()! - confirmedCountOf(editingId))} 席
+                                                {(waitlistCounts[editingId] ?? 0) > 0 && ` ・ キャンセル待ち ${waitlistCounts[editingId]} 件`}）
+                                            </p>
+                                        )}
+                                        <p className="text-xs text-slate-400">
+                                            キャンセル待ちを除いた申込の数で数えます。回答を削除すると席が空きます。
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-xs text-slate-500">満席になったら</Label>
+                                        {([
+                                            { value: 'waitlist', label: 'キャンセル待ちとして受け付ける', hint: '満席後の申込は「キャンセル待ち」として保存され、回答一覧から繰り上げできます' },
+                                            { value: 'close', label: '申込を締め切る', hint: 'フォームに「受付を終了しました」と表示し、申込できなくなります' },
+                                        ] as const).map((opt) => (
+                                            <label
+                                                key={opt.value}
+                                                className={cn(
+                                                    'flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer bg-white dark:bg-slate-900',
+                                                    fFullAction === opt.value ? 'border-emerald-500' : 'border-slate-200 dark:border-slate-700'
+                                                )}
+                                            >
+                                                <input
+                                                    type="radio"
+                                                    name="full-action"
+                                                    checked={fFullAction === opt.value}
+                                                    onChange={() => setFFullAction(opt.value)}
+                                                    className="mt-0.5 w-4 h-4 accent-emerald-600"
+                                                />
+                                                <span>
+                                                    <span className="block text-sm font-medium">{opt.label}</span>
+                                                    <span className="block text-xs text-slate-500 mt-0.5">{opt.hint}</span>
+                                                </span>
+                                            </label>
+                                        ))}
+                                    </div>
+
+                                    {fFullAction === 'waitlist' && (
+                                        <>
+                                            <div className="space-y-1.5">
+                                                <Label className="text-xs text-slate-500">キャンセル待ちの自動返信</Label>
+                                                <p className="text-xs text-slate-400">
+                                                    キャンセル待ちで受け付けた人には「送信完了時の自動返信」の代わりにこの文面を送ります。空欄なら入力欄の薄い文字の文面を送ります。
+                                                </p>
+                                                <div className="relative">
+                                                    <textarea
+                                                        value={fWaitlistMessage}
+                                                        onChange={(e) => setFWaitlistMessage(e.target.value)}
+                                                        placeholder={DEFAULT_WAITLIST_MESSAGE}
+                                                        className="w-full h-28 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+                                                    />
+                                                    <button
+                                                        onClick={() => setFWaitlistMessage(fWaitlistMessage + '{name}')}
+                                                        className="absolute bottom-2 right-2 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600"
+                                                    >
+                                                        {'{name}'} 挿入
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1.5">
+                                                <Label className="text-xs text-slate-500 flex items-center gap-1.5">
+                                                    <TagIcon className="w-3.5 h-3.5" />
+                                                    キャンセル待ちの人に付与するタグ（任意）
+                                                </Label>
+                                                <p className="text-xs text-slate-400">
+                                                    キャンセル待ちの人には「完了時に付与するタグ」は付けず、こちらのタグを付けます。
+                                                </p>
+                                                <TagPicker tags={tags} selectedIds={fWaitlistTagIds} onToggle={toggleWaitlistTag} />
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         {/* 公開設定 */}
@@ -679,6 +828,11 @@ export default function FormsPage() {
                                                     {form.fields.length}項目 ・ 回答 {responseCounts[form.id] ?? 0}件
                                                 </span>
                                             </div>
+                                            <CapacityBadge
+                                                form={form}
+                                                confirmedCount={confirmedCountOf(form.id)}
+                                                waitlistCount={waitlistCounts[form.id] ?? 0}
+                                            />
                                             <h3 className="font-semibold truncate">{form.name}</h3>
                                             {form.title && <p className="text-sm text-slate-500 truncate">{form.title}</p>}
                                             <p className="text-xs text-slate-400 mt-1">{formatDateTime(form.created_at)}</p>
@@ -743,12 +897,75 @@ export default function FormsPage() {
 }
 
 // =============================================================================
+// タグ選択（完了タグ・キャンセル待ちタグで共用）
+// =============================================================================
+function TagPicker({ tags, selectedIds, onToggle }: { tags: Tag[]; selectedIds: string[]; onToggle: (tagId: string) => void }) {
+    return (
+        <div className="flex flex-wrap gap-2">
+            {tags.map((tag) => (
+                <button
+                    key={tag.id}
+                    onClick={() => onToggle(tag.id)}
+                    className={cn(
+                        'px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
+                        selectedIds.includes(tag.id) ? 'text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                    )}
+                    style={selectedIds.includes(tag.id) ? { backgroundColor: tag.color } : {}}
+                >
+                    {tag.name}
+                </button>
+            ))}
+            {tags.length === 0 && <p className="text-sm text-slate-500">タグがありません（タグ管理で作成できます）</p>}
+        </div>
+    )
+}
+
+// =============================================================================
+// 一覧カードの残席表示（残席設定がオフなら何も出さない）
+// =============================================================================
+function CapacityBadge({ form, confirmedCount, waitlistCount }: { form: Form; confirmedCount: number; waitlistCount: number }) {
+    const availability = computeAvailability(form, confirmedCount)
+    if (!availability) return null
+
+    const { capacity, remaining, state } = availability
+    const label =
+        state === 'open' ? `残り ${remaining} 席 / 定員 ${capacity} 席`
+        : state === 'waitlist' ? `満席（定員 ${capacity} 席）・キャンセル待ち受付中`
+        : `満席（定員 ${capacity} 席）・受付終了`
+    const tone =
+        state === 'open'
+            ? remaining <= FEW_SEATS_THRESHOLD
+                ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-300'
+                : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+            : state === 'waitlist'
+                ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
+                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+
+    return (
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className={cn('inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium', tone)}>
+                <Armchair className="w-3.5 h-3.5" />
+                {label}
+            </span>
+            {waitlistCount > 0 && (
+                <span className="text-xs text-amber-700 dark:text-amber-300">キャンセル待ち {waitlistCount}件</span>
+            )}
+        </div>
+    )
+}
+
+// =============================================================================
 // 回答閲覧モーダル（テーブル表示＋CSVダウンロード）
 // =============================================================================
 type FormResponseRow = Pick<
     FormResponse,
-    'id' | 'answers' | 'created_at' | 'completion_reply_status' | 'completion_reply_error'
+    'id' | 'answers' | 'created_at' | 'entry_status' | 'completion_reply_status' | 'completion_reply_error'
 >
+
+const ENTRY_STATUS_LABELS: Record<FormEntryStatus, string> = {
+    confirmed: '申込',
+    waitlisted: 'キャンセル待ち',
+}
 
 function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () => void; onChanged?: () => void }) {
     const [responses, setResponses] = useState<FormResponseRow[]>([])
@@ -757,6 +974,7 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
     const [editValues, setEditValues] = useState<Record<string, string | string[]>>({})
     const [savingEdit, setSavingEdit] = useState(false)
     const [deletingId, setDeletingId] = useState<string | null>(null)
+    const [changingStatusId, setChangingStatusId] = useState<string | null>(null)
 
     useEffect(() => {
         const fetchResponses = async () => {
@@ -773,6 +991,52 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
         }
         fetchResponses()
     }, [form.id])
+
+    // マイグレーション適用前の回答には申込状態が無いので、通常の申込として扱う
+    const isWaitlisted = (r: FormResponseRow) => r.entry_status === 'waitlisted'
+    const showEntryStatus = !!form.capacity_enabled || responses.some(isWaitlisted)
+    const confirmedCount = responses.filter((r) => !isWaitlisted(r)).length
+    const waitlistCount = responses.length - confirmedCount
+
+    // キャンセル待ちの順番（申込が早い順）。繰り上げる順番の目安にする
+    const waitlistOrder = new Map(
+        responses
+            .filter(isWaitlisted)
+            .sort((a, b) => a.created_at.localeCompare(b.created_at))
+            .map((r, i) => [r.id, i + 1])
+    )
+
+    const entryStatusText = (r: FormResponseRow) =>
+        isWaitlisted(r) ? `${ENTRY_STATUS_LABELS.waitlisted}（${waitlistOrder.get(r.id)}番目）` : ENTRY_STATUS_LABELS.confirmed
+
+    const changeEntryStatus = async (r: FormResponseRow, next: FormEntryStatus) => {
+        if (next === 'confirmed') {
+            const over = form.capacity_enabled && form.capacity != null && confirmedCount >= form.capacity
+            const message = [
+                over
+                    ? `定員（${form.capacity}席）に達していますが、この回答を繰り上げますか？（定員を超えて申込扱いになります）`
+                    : 'この回答をキャンセル待ちから繰り上げて、申込扱いにしますか？',
+                'ご本人への連絡やタグの付け替えは自動では行いません。',
+            ].join('\n')
+            if (!confirm(message)) return
+        } else if (!confirm('この回答をキャンセル待ちに戻しますか？（席が1つ空きます）')) {
+            return
+        }
+
+        setChangingStatusId(r.id)
+        const supabase = createClient()
+        const { error } = await supabase
+            .from('form_responses')
+            .update({ entry_status: next })
+            .eq('id', r.id)
+        setChangingStatusId(null)
+        if (error) {
+            alert('申込状態の変更に失敗しました')
+            return
+        }
+        setResponses((prev) => prev.map((x) => (x.id === r.id ? { ...x, entry_status: next } : x)))
+        onChanged?.()
+    }
 
     const cellValue = (r: FormResponseRow, fieldId: string): string => {
         const val = r.answers[fieldId]
@@ -834,9 +1098,10 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
             const s = v ?? ''
             return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
         }
-        const headers = ['送信日時', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
+        const headers = ['送信日時', '申込状態', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
         const rows = responses.map((r) => [
             formatDateTime(r.created_at),
+            entryStatusText(r),
             completionReplyLabel(r),
             completionReplyDetail(r) || '',
             ...form.fields.map((f) => cellValue(r, f.id)),
@@ -858,7 +1123,16 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <Card className="w-full max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
                 <CardHeader className="flex-none flex flex-row items-center justify-between border-b pb-4 gap-3">
-                    <CardTitle className="text-lg truncate">「{form.name}」の回答（{responses.length}件）</CardTitle>
+                    <div className="min-w-0">
+                        <CardTitle className="text-lg truncate">「{form.name}」の回答（{responses.length}件）</CardTitle>
+                        {!loading && showEntryStatus && (
+                            <p className="text-xs text-slate-500 mt-1">
+                                申込 {confirmedCount} 件
+                                {form.capacity_enabled && form.capacity != null && ` / 定員 ${form.capacity} 席（残り ${Math.max(0, form.capacity - confirmedCount)} 席）`}
+                                {' ・ '}キャンセル待ち {waitlistCount} 件
+                            </p>
+                        )}
+                    </div>
                     <div className="flex items-center gap-2 flex-none">
                         <Button
                             variant="outline"
@@ -884,6 +1158,9 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
                                 <tr>
                                     <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">送信日時</th>
+                                    {showEntryStatus && (
+                                        <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">申込状態</th>
+                                    )}
                                     <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">自動返信</th>
                                     {form.fields.map((field) => (
                                         <th key={field.id} className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">
@@ -897,6 +1174,37 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                                 {responses.map((r, i) => (
                                     <tr key={r.id} className={cn(i % 2 === 1 && 'bg-slate-50 dark:bg-slate-800/40')}>
                                         <td className="px-3 py-2 whitespace-nowrap text-slate-500 align-top">{formatDateTime(r.created_at)}</td>
+                                        {showEntryStatus && (
+                                            <td className="px-3 py-2 align-top whitespace-nowrap">
+                                                <span className={cn(
+                                                    'px-2 py-0.5 text-xs rounded-full',
+                                                    isWaitlisted(r)
+                                                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                                        : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                                )}>
+                                                    {entryStatusText(r)}
+                                                </span>
+                                                <div className="mt-1">
+                                                    {changingStatusId === r.id ? (
+                                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400" />
+                                                    ) : isWaitlisted(r) ? (
+                                                        <button
+                                                            onClick={() => changeEntryStatus(r, 'confirmed')}
+                                                            className="text-xs text-emerald-600 hover:underline"
+                                                        >
+                                                            繰り上げる
+                                                        </button>
+                                                    ) : form.capacity_enabled ? (
+                                                        <button
+                                                            onClick={() => changeEntryStatus(r, 'waitlisted')}
+                                                            className="text-xs text-slate-400 hover:text-slate-600 hover:underline"
+                                                        >
+                                                            キャンセル待ちに戻す
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                            </td>
+                                        )}
                                         <td className="px-3 py-2 align-top min-w-[8rem] max-w-xs">
                                             {r.completion_reply_status ? (
                                                 <>

@@ -335,17 +335,19 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
         : responses
 
     const notFriendCount = responses.filter(r => friendStatusOf(userOf(r)) !== 'friend').length
+    const waitlistCount = responses.filter(r => r.entry_status === 'waitlisted').length
     const undeliveredCount = responses.filter(isCompletionReplyUndelivered).length
 
     const handleExportCSV = () => {
         if (!form) return
 
         const escape = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
-        const headers = ['申込日時', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', '自動返信', '自動返信の理由', ...form.fields.map(f => f.label)]
+        const headers = ['申込日時', '申込状態', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', '自動返信', '自動返信の理由', ...form.fields.map(f => f.label)]
         const rows = filtered.map(r => {
             const user = userOf(r)
             return [
                 formatDateTime(r.created_at),
+                r.entry_status === 'waitlisted' ? 'キャンセル待ち' : '申込',
                 user?.display_name || '',
                 user?.internal_name || '',
                 FRIEND_STATUS_LABELS[friendStatusOf(user)],
@@ -431,6 +433,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                 <p className="text-slate-500 dark:text-slate-400">
                     {q ? `${filtered.length} / ${responses.length}` : responses.length} 件の申込
                     {notFriendCount > 0 && `（うち友だち以外 ${notFriendCount} 件）`}
+                    {waitlistCount > 0 && `（うちキャンセル待ち ${waitlistCount} 件）`}
                     {listLoading && (
                         <Loader2 className="inline w-3 h-3 ml-2 animate-spin text-slate-400" />
                     )}
@@ -516,6 +519,11 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                                     <span className={cn('px-2 py-0.5 text-xs rounded-full', FRIEND_STATUS_CLASSES[status])}>
                                                         {FRIEND_STATUS_LABELS[status]}
                                                     </span>
+                                                    {r.entry_status === 'waitlisted' && (
+                                                        <span className="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                                                            キャンセル待ち
+                                                        </span>
+                                                    )}
                                                     <CompletionReplyBadge record={r} />
                                                 </div>
                                                 <p className="text-xs text-slate-400 mt-0.5">

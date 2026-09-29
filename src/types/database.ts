@@ -215,9 +215,29 @@ export interface Form {
     completion_message: MessageContent[] // 完了時の自動返信（テキスト/画像）
     completion_tag_ids: string[] | null
     is_active: boolean
+    // 残席設定（オフなら定員なし）
+    capacity_enabled: boolean
+    capacity: number | null
+    full_action: FormFullAction // 満席時の動作
+    waitlist_message: string | null // キャンセル待ちの自動返信（NULLなら既定の文面）
+    waitlist_tag_ids: string[] | null // キャンセル待ちの人に付けるタグ（完了タグの代わり）
     created_at: string
     updated_at: string
 }
+
+/**
+ * 満席時の動作
+ * - waitlist: キャンセル待ちとして受け付ける
+ * - close:    申込を締め切る
+ */
+export type FormFullAction = 'waitlist' | 'close'
+
+/**
+ * 申込状態
+ * - confirmed:  申込（席を確保した）
+ * - waitlisted: キャンセル待ち
+ */
+export type FormEntryStatus = 'confirmed' | 'waitlisted'
 
 /**
  * 申込完了時の自動返信の送信結果。
@@ -235,6 +255,7 @@ export interface FormResponse {
     line_user_id: string | null
     line_user_id_raw: string | null
     answers: Record<string, string | string[]>
+    entry_status: FormEntryStatus
     completion_reply_status: CompletionReplyStatus | null // NULL = 記録なし（機能追加前の回答）
     completion_reply_error: string | null
     completion_reply_at: string | null
