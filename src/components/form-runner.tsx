@@ -1,16 +1,21 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { FormField } from '@/types'
+import { FEW_SEATS_THRESHOLD, type FormAvailability } from '@/lib/forms/capacity'
+import type { FormEntryStatus, FormField } from '@/types'
 
 interface PublicForm {
     id: string
     title: string | null
     description: string | null
     fields: FormField[]
+    availability: FormAvailability | null // 残席設定がオフなら null
 }
 
 type AnswerValue = string | string[]
+
+// フォームを開いている間に残席を取り直す間隔
+const AVAILABILITY_REFRESH_MS = 30_000
 
 /**
  * 申込フォームの実行本体（LIFF）。
@@ -22,6 +27,7 @@ export function FormRunner({ formId }: { formId: string | null }) {
     const [accessToken, setAccessToken] = useState<string | null>(null)
     const [status, setStatus] = useState<'loading' | 'ready' | 'submitting' | 'done' | 'error'>('loading')
     const [errorMessage, setErrorMessage] = useState('')
+    const [entryStatus, setEntryStatus] = useState<FormEntryStatus>('confirmed')
 
     // LIFF初期化 → アクセストークン取得 → フォーム定義取得
     useEffect(() => {
@@ -42,7 +48,7 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 // フォーム定義の取得はLIFFのログイン/トークンに依存しないため、
                 // LIFF初期化と並行して先に走らせておく（読み込みの高速化）。
                 type FormFetchResult = { ok: boolean; data?: PublicForm; error?: string }
-                const formPromise: Promise<FormFetchResult> = fetch(`/api/forms/${formId}`)
+                const formPromise: Promise<FormFetchResult> = fetch(`/api/forms/${formId}`, { cache: 'no-store' })
                     .then(async (res): Promise<FormFetchResult> => {
                         if (!res.ok) {
                             const body = await res.json().catch(() => ({}))
@@ -85,6 +91,23 @@ export function FormRunner({ formId }: { formId: string | null }) {
 
         run()
     }, [formId])
+
+    // 入力している間にも席は埋まっていくので、残席を定期的に取り直す（残席設定がオンのときのみ）
+    const hasCapacity = !!form?.availability
+    useEffect(() => {
+        if (!formId || !hasCapacity) return
+        const timer = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/forms/${formId}`, { cache: 'no-store' })
+                if (!res.ok) return
+                const latest = (await res.json()) as PublicForm
+                setForm((prev) => (prev ? { ...prev, availability: latest.availability } : prev))
+            } catch {
+                // 取り直しに失敗しても、表示中の残席のまま入力を続けられるようにする
+            }
+        }, AVAILABILITY_REFRESH_MS)
+        return () => clearInterval(timer)
+    }, [formId, hasCapacity])
 
     const setValue = (fieldId: string, value: AnswerValue) => {
         setAnswers((prev) => ({ ...prev, [fieldId]: value }))
@@ -133,13 +156,21 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 body: JSON.stringify({ accessToken, answers }),
             })
 
+            const data = await res.json().catch(() => ({}))
             if (!res.ok) {
-                const data = await res.json().catch(() => ({}))
+                // 入力中に満席になり締め切られた
+                if (data.full && form.availability) {
+                    setForm({ ...form, availability: { ...form.availability, remaining: 0, state: 'closed' } })
+                    setErrorMessage('')
+                    setStatus('ready')
+                    return
+                }
                 setErrorMessage(data.error || '送信に失敗しました')
                 setStatus('ready')
                 return
             }
 
+            setEntryStatus(data.entryStatus === 'waitlisted' ? 'waitlisted' : 'confirmed')
             setStatus('done')
 
             // 完了メッセージはトークに届くので、少し待ってからLIFFを閉じる
@@ -179,6 +210,18 @@ export function FormRunner({ formId }: { formId: string | null }) {
     }
 
     if (status === 'done') {
+        if (entryStatus === 'waitlisted') {
+            return (
+                <Centered>
+                    <div className="w-16 h-16 rounded-full bg-amber-500 flex items-center justify-center text-white text-3xl">✓</div>
+                    <p className="mt-5 text-slate-800 text-xl font-bold">キャンセル待ちで受け付けました</p>
+                    <p className="mt-2 text-slate-500 text-sm text-center leading-relaxed">
+                        定員に達したため、キャンセル待ちでのお申し込みとなりました。<br />
+                        お席に空きが出ましたら、トーク画面でご連絡いたします。<br />この画面は自動的に閉じます。
+                    </p>
+                </Centered>
+            )
+        }
         return (
             <Centered>
                 <div className="w-16 h-16 rounded-full bg-[#06C755] flex items-center justify-center text-white text-3xl">✓</div>
@@ -191,6 +234,21 @@ export function FormRunner({ formId }: { formId: string | null }) {
     }
 
     if (!form) return null
+
+    const availability = form.availability
+
+    // 満席で締め切ったフォーム
+    if (availability?.state === 'closed') {
+        return (
+            <Centered>
+                <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center text-2xl">🈵</div>
+                <p className="mt-5 text-slate-800 text-lg font-bold text-center">{form.title || 'お申し込みフォーム'}</p>
+                <p className="mt-2 text-slate-500 text-sm text-center leading-relaxed">
+                    定員に達したため、お申し込みの受付を終了しました。<br />たくさんのお申し込みありがとうございました。
+                </p>
+            </Centered>
+        )
+    }
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -205,6 +263,8 @@ export function FormRunner({ formId }: { formId: string | null }) {
                         <p className="mt-2 text-sm text-slate-500 whitespace-pre-wrap leading-relaxed">{form.description}</p>
                     )}
                 </div>
+
+                {availability && <AvailabilityBanner availability={availability} />}
 
                 {/* 項目 */}
                 <div className="space-y-5">
@@ -236,12 +296,55 @@ export function FormRunner({ formId }: { formId: string | null }) {
                     disabled={status === 'submitting'}
                     className="mt-8 w-full py-3.5 rounded-xl bg-[#06C755] text-white font-bold text-base shadow-sm active:scale-[0.99] transition disabled:opacity-60"
                 >
-                    {status === 'submitting' ? '送信中...' : '送信する'}
+                    {status === 'submitting'
+                        ? '送信中...'
+                        : availability?.state === 'waitlist' ? 'キャンセル待ちで申し込む' : '送信する'}
                 </button>
 
                 <p className="mt-4 text-center text-xs text-slate-400">
                     ※ このフォームはLINEアカウントと連携しています
                 </p>
+            </div>
+        </div>
+    )
+}
+
+/**
+ * 残席のカウントダウン表示。満席でキャンセル待ちを受け付けている間はその旨を出す。
+ */
+function AvailabilityBanner({ availability }: { availability: FormAvailability }) {
+    const { capacity, remaining, state } = availability
+
+    if (state === 'waitlist') {
+        return (
+            <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <p className="text-sm font-bold text-amber-800">満席です（定員 {capacity} 席）</p>
+                <p className="mt-1 text-xs text-amber-700 leading-relaxed">
+                    ただいまキャンセル待ちとしてお申し込みを受け付けています。お席に空きが出ましたら、順番にご連絡いたします。
+                </p>
+            </div>
+        )
+    }
+
+    const few = remaining <= FEW_SEATS_THRESHOLD
+    const filledPercent = Math.min(100, Math.round(((capacity - remaining) / capacity) * 100))
+    return (
+        <div className={`mb-6 rounded-xl border px-4 py-3 ${few ? 'border-red-200 bg-red-50' : 'border-emerald-200 bg-emerald-50'}`}>
+            <div className="flex items-baseline justify-between gap-3">
+                <p className={`text-sm font-bold ${few ? 'text-red-600' : 'text-emerald-700'}`}>
+                    {few ? '残りわずか！' : '受付中'}
+                </p>
+                <p className="text-slate-700">
+                    <span className="text-xs">残り</span>
+                    <span className={`mx-1 text-2xl font-bold tabular-nums ${few ? 'text-red-600' : 'text-emerald-700'}`}>{remaining}</span>
+                    <span className="text-xs">席 / 定員 {capacity} 席</span>
+                </p>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-white/80 overflow-hidden">
+                <div
+                    className={`h-full rounded-full ${few ? 'bg-red-500' : 'bg-[#06C755]'}`}
+                    style={{ width: `${filledPercent}%` }}
+                />
             </div>
         </div>
     )

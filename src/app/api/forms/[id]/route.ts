@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { computeAvailability } from '@/lib/forms/capacity'
+import type { Form } from '@/types'
 
 /**
  * 公開フォーム定義の取得（LIFFフォームページから呼ばれる・未認証）
  * GET /api/forms/[id]
  *
  * 申込者に見せて問題のない項目のみを返す（channel_access_token 等は返さない）。
+ * 残席設定がオンなら残席数と受付状況（availability）も返す。フォームを開いている
+ * 間も残席が減っていくので、LIFF側は定期的にこのAPIを呼び直す。
  */
 export async function GET(
     _request: NextRequest,
@@ -15,18 +19,34 @@ export async function GET(
 
     try {
         const supabase = createAdminClient()
-        const { data: form, error } = await supabase
+        // 列を指定しない: 残席設定の列はマイグレーション適用前には無く、指定すると取得ごと失敗する
+        const { data, error } = await supabase
             .from('forms')
-            .select('id, title, description, fields, is_active')
+            .select('*')
             .eq('id', id)
             .single()
 
-        if (error || !form) {
+        if (error || !data) {
             return NextResponse.json({ error: 'フォームが見つかりません' }, { status: 404 })
         }
+        const form = data as Form
 
         if (!form.is_active) {
             return NextResponse.json({ error: 'このフォームは現在受付を停止しています' }, { status: 403 })
+        }
+
+        let availability = null
+        if (form.capacity_enabled) {
+            const { count, error: countError } = await supabase
+                .from('form_responses')
+                .select('id', { count: 'exact', head: true })
+                .eq('form_id', form.id)
+                .eq('entry_status', 'confirmed')
+            if (countError) {
+                console.error('残席の集計エラー:', countError)
+                return NextResponse.json({ error: '受付状況を確認できませんでした' }, { status: 500 })
+            }
+            availability = computeAvailability(form, count ?? 0)
         }
 
         return NextResponse.json({
@@ -34,6 +54,7 @@ export async function GET(
             title: form.title,
             description: form.description,
             fields: form.fields ?? [],
+            availability,
         })
     } catch (error) {
         console.error('フォーム取得エラー:', error)
