@@ -4,8 +4,9 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
-import type { Form, FormField, FormFieldType, Tag, MessageContent } from '@/types'
+import type { Form, FormField, FormFieldType, FormResponse, Tag, MessageContent } from '@/types'
 import { uploadToR2 } from '@/lib/storage/upload-client'
+import { CompletionReplyBadge, completionReplyDetail, completionReplyLabel } from '@/components/completion-reply-status'
 import {
     ClipboardList,
     Plus,
@@ -744,11 +745,10 @@ export default function FormsPage() {
 // =============================================================================
 // 回答閲覧モーダル（テーブル表示＋CSVダウンロード）
 // =============================================================================
-interface FormResponseRow {
-    id: string
-    answers: Record<string, string | string[]>
-    created_at: string
-}
+type FormResponseRow = Pick<
+    FormResponse,
+    'id' | 'answers' | 'created_at' | 'completion_reply_status' | 'completion_reply_error'
+>
 
 function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () => void; onChanged?: () => void }) {
     const [responses, setResponses] = useState<FormResponseRow[]>([])
@@ -761,9 +761,10 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
     useEffect(() => {
         const fetchResponses = async () => {
             const supabase = createClient()
+            // 列を指定しない: 自動返信の送信結果の列はマイグレーション適用前には無く、指定すると取得ごと失敗する
             const { data } = await supabase
                 .from('form_responses')
-                .select('id, answers, created_at')
+                .select('*')
                 .eq('form_id', form.id)
                 .order('created_at', { ascending: false })
                 .limit(1000)
@@ -833,9 +834,11 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
             const s = v ?? ''
             return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
         }
-        const headers = ['送信日時', ...form.fields.map((f) => f.label)]
+        const headers = ['送信日時', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
         const rows = responses.map((r) => [
             formatDateTime(r.created_at),
+            completionReplyLabel(r),
+            completionReplyDetail(r) || '',
             ...form.fields.map((f) => cellValue(r, f.id)),
         ])
         const csv = [headers, ...rows].map((row) => row.map(escape).join(',')).join('\r\n')
@@ -881,6 +884,7 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
                                 <tr>
                                     <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">送信日時</th>
+                                    <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">自動返信</th>
                                     {form.fields.map((field) => (
                                         <th key={field.id} className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">
                                             {field.label}
@@ -893,6 +897,18 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                                 {responses.map((r, i) => (
                                     <tr key={r.id} className={cn(i % 2 === 1 && 'bg-slate-50 dark:bg-slate-800/40')}>
                                         <td className="px-3 py-2 whitespace-nowrap text-slate-500 align-top">{formatDateTime(r.created_at)}</td>
+                                        <td className="px-3 py-2 align-top min-w-[8rem] max-w-xs">
+                                            {r.completion_reply_status ? (
+                                                <>
+                                                    <CompletionReplyBadge record={r} />
+                                                    {completionReplyDetail(r) && (
+                                                        <p className="mt-1 text-xs text-slate-500 break-words">{completionReplyDetail(r)}</p>
+                                                    )}
+                                                </>
+                                            ) : (
+                                                <span className="text-xs text-slate-400">{completionReplyLabel(r)}</span>
+                                            )}
+                                        </td>
                                         {form.fields.map((field) => (
                                             <td key={field.id} className="px-3 py-2 align-top text-slate-800 dark:text-slate-200 max-w-xs break-words">
                                                 {cellValue(r, field.id)}
