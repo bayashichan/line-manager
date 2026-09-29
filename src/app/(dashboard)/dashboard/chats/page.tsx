@@ -55,7 +55,7 @@ function ChatsPage() {
     const [channelId, setChannelId] = useState<string | null>(null)
 
     const supabase = createClient()
-    const messagesEndRef = useRef<HTMLDivElement>(null)
+    const messagesViewportRef = useRef<HTMLDivElement>(null)
     const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
 
     // 表示名取得ヘルパー (管理用ネームを優先、なければLINE名)
@@ -224,9 +224,12 @@ function ChatsPage() {
         ))
     }
 
+    // メッセージエリアだけを最下部へスクロール
+    // (scrollIntoViewはページ全体までスクロールさせ、相手の名前欄が画面外に出てしまうため使わない)
     const scrollToBottom = () => {
         setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+            const viewport = messagesViewportRef.current
+            viewport?.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
         }, 100)
     }
 
@@ -454,7 +457,8 @@ function ChatsPage() {
     }
 
     return (
-        <div className="flex h-[calc(100vh-8rem)] gap-4">
+        // 高さ = 画面の高さ - (ヘッダー + mainの上下余白)。ページ自体がスクロールしないように収める
+        <div className="flex h-[calc(100dvh-10rem)] lg:h-[calc(100dvh-8rem)] gap-4">
             {/* 左サイドバー：友だちリスト (モバイル時はユーザー未選択時のみ表示) */}
             <Card className={`w-full lg:w-80 flex-col overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 ${selectedUser ? 'hidden lg:flex' : 'flex'}`}>
                 <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900">
@@ -511,8 +515,8 @@ function ChatsPage() {
             <Card className={`flex-1 flex-col overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 ${selectedUser ? 'flex' : 'hidden lg:flex'}`}>
                 {selectedUser ? (
                     <>
-                        {/* ヘッダー */}
-                        <div className="p-3 lg:p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-3 bg-white dark:bg-slate-900 shadow-sm z-10">
+                        {/* ヘッダー (メッセージをスクロールしても上部に固定) */}
+                        <div className="shrink-0 p-3 lg:p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-3 bg-white dark:bg-slate-900 shadow-sm z-10">
                             {/* モバイル用戻るボタン */}
                             <Button
                                 variant="ghost"
@@ -522,19 +526,23 @@ function ChatsPage() {
                             >
                                 <ArrowLeft className="w-5 h-5" />
                             </Button>
-                            <div className="flex items-center gap-3">
-                                <Avatar className="h-8 w-8">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <Avatar className="h-8 w-8 shrink-0">
                                     <AvatarImage src={selectedUser.picture_url} />
                                     <AvatarFallback>{(getDisplayName(selectedUser) || '?').slice(0, 2)}</AvatarFallback>
                                 </Avatar>
-                                <span className="font-bold text-slate-900 dark:text-slate-100">
+                                <span className="font-bold truncate text-slate-900 dark:text-slate-100">
                                     {getDisplayName(selectedUser)}
                                 </span>
                             </div>
                         </div>
 
                         {/* メッセージエリア */}
-                        <ScrollArea className="flex-1 p-4 bg-slate-100 dark:bg-slate-900/50">
+                        <ScrollArea
+                            className="flex-1 min-h-0 p-4 bg-slate-100 dark:bg-slate-900/50"
+                            viewportRef={messagesViewportRef}
+                            viewportClassName="overscroll-contain"
+                        >
                             <div className="flex flex-col gap-4">
                                 {messages.map((msg) => {
                                     const isAdmin = msg.sender === 'admin'
@@ -581,7 +589,6 @@ function ChatsPage() {
                                         </div>
                                     )
                                 })}
-                                <div ref={messagesEndRef} />
                             </div>
                         </ScrollArea>
 
