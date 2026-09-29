@@ -31,7 +31,8 @@ export async function GET(request: NextRequest) {
           channels (*)
         ),
         line_users (
-          line_user_id
+          line_user_id,
+          display_name
         )
       `)
             .eq('status', 'active')
@@ -155,7 +156,8 @@ export async function GET(request: NextRequest) {
 
                 if (nextStep) {
                     // 次のステップへ進む（配信日時はシナリオ開始日時を基準にする）
-                    let baseDate = new Date(execution.created_at)
+                    // step_executions の開始日時の列は started_at（created_at は存在しない）
+                    let baseDate = new Date(execution.started_at ?? execution.created_at)
                     if (isNaN(baseDate.getTime())) {
                         baseDate = new Date()
                     }
