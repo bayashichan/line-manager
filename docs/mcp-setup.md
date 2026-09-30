@@ -64,22 +64,18 @@ claude mcp add --transport http line-manager https://<このツールのURL>/api
 
 Claude Code の中で `/mcp` を実行し、`line-manager` を選んで認証すると、ブラウザで同じ許可画面が開きます。
 
-### 4. ステップ配信を動かす頻度を上げる（重要）
+### 4. 定期処理を5分ごとに動かす（重要）
 
-ステップ配信は `/api/cron/step-messages` が呼ばれたときに送信されます。
-いまの `vercel.json` の設定は **1日1回（日本時間 9:00）** です。このままだと「当日20:00」「30分後」などの配信は、翌朝9時にまとめて送られます。
+ステップ配信・リマインダー・面談の日程の催促は、`/api/cron/tick` が呼ばれたときに送信されます。
+`vercel.json` の Cron は 1日1回（日本時間 9:00）しか動かないため、QStash のスケジュールで5分ごとに呼んでください。
 
-どちらかで、数分おきに呼ばれるようにしてください。
+1. Upstash Console → QStash → **Schedules** → **Create Schedule**
+2. Destination: `https://<このツールのURL>/api/cron/tick`
+3. Cron: `*/5 * * * *`（5分ごと）
+4. Method: `GET`
+5. Headers: `Authorization: Bearer <Vercel に設定している CRON_SECRET の値>`
 
-- **Upstash QStash のスケジュール（おすすめ・既に契約済みのサービス）**
-  1. Upstash Console → QStash → **Schedules** → **Create Schedule**
-  2. Destination: `https://<このツールのURL>/api/cron/step-messages`
-  3. Cron: `*/5 * * * *`（5分ごと）
-  4. Method: `GET`
-  5. Headers: `Authorization: Bearer <Vercel に設定している CRON_SECRET の値>`
-- **Vercel Pro プラン**なら `vercel.json` の `step-messages` の `schedule` を `*/5 * * * *` などに変更
-
-1回の実行で最大50件を送るため、5分ごとなら1日あたり最大14,400件まで処理できます。
+1回の実行で、ステップ配信は最大50件、リマインダーは最大100通を送ります。
 
 ## 使い方の例
 

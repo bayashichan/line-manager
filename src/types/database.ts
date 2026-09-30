@@ -326,3 +326,111 @@ export interface TagWithRichMenu extends Tag {
 export interface StepScenarioWithMessages extends StepScenario {
     messages: StepMessage[]
 }
+
+// =============================================================================
+// リマインダー配信（予定の日時を基準にした配信）
+// =============================================================================
+
+/** day_time: 予定日の N日前/後 の HH:MM（日本時間） / relative: 予定時刻の N分前/後 */
+export type ReminderTimingType = 'day_time' | 'relative'
+
+export interface Reminder {
+    id: string
+    channel_id: string
+    name: string
+    is_active: boolean
+    send_missed: boolean
+    created_at: string
+    updated_at: string
+}
+
+export interface ReminderStep {
+    id: string
+    reminder_id: string
+    step_order: number
+    timing_type: ReminderTimingType
+    offset_days: number
+    send_hour: number | null
+    send_minute: number
+    offset_minutes: number
+    content: MessageContent[]
+    created_at: string
+}
+
+export interface FriendReminder {
+    id: string
+    channel_id: string
+    reminder_id: string | null
+    line_user_id: string
+    target_at: string
+    label: string | null
+    source: 'manual' | 'booking' | 'mcp'
+    status: 'active' | 'completed' | 'cancelled'
+    created_at: string
+}
+
+export interface ReminderDelivery {
+    id: string
+    friend_reminder_id: string
+    step_id: string | null
+    step_order: number
+    send_at: string
+    content: MessageContent[]
+    status: 'pending' | 'sending' | 'sent' | 'failed' | 'skipped' | 'cancelled'
+    sent_at: string | null
+    error_message: string | null
+    created_at: string
+}
+
+// =============================================================================
+// 面談の日程調整
+// =============================================================================
+
+export interface BookingSettings {
+    channel_id: string
+    is_active: boolean
+    trigger_keywords: string[]
+    offer_count: number
+    min_lead_hours: number
+    session_label: string
+    intro_text: string
+    other_label: string
+    decline_label: string
+    booked_text: string
+    other_text: string
+    decline_text: string
+    no_slots_text: string
+    taken_text: string
+    nudge_enabled: boolean
+    nudge_after_hours: number
+    nudge_text: string
+    booked_tag_id: string | null
+    reminder_id: string | null
+    updated_at: string
+}
+
+export interface BookingSlot {
+    id: string
+    channel_id: string
+    start_at: string
+    status: 'open' | 'booked' | 'closed'
+    line_user_id: string | null
+    booked_at: string | null
+    created_at: string
+}
+
+export type BookingOfferStatus = 'pending' | 'booked' | 'other' | 'declined' | 'no_slots' | 'superseded' | 'cancelled'
+
+export interface BookingOffer {
+    id: string
+    channel_id: string
+    line_user_id: string
+    status: BookingOfferStatus
+    slot_ids: string[]
+    booked_slot_id: string | null
+    friend_reminder_id: string | null
+    responded_at: string | null
+    nudged_at: string | null
+    answered_at: string | null
+    created_at: string
+}
