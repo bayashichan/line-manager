@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
 
 /**
@@ -39,26 +38,6 @@ async function handler(request: Request) {
             return NextResponse.json({ error: 'チャネルが見つかりません' }, { status: 404 })
         }
 
-        const lineClient = new LineClient(channel.channel_access_token)
-
-        // デフォルトリッチメニューを適用
-        if (channel.default_rich_menu_id) {
-            try {
-                const { data: richMenu } = await supabase
-                    .from('rich_menus')
-                    .select('rich_menu_id')
-                    .eq('id', channel.default_rich_menu_id)
-                    .single()
-
-                if (richMenu?.rich_menu_id) {
-                    await lineClient.linkRichMenuToUser(lineUserId, richMenu.rich_menu_id)
-                }
-                console.log(`QStash: リッチメニュー適用完了 (userId: ${lineUserId})`)
-            } catch (err) {
-                console.error(`QStash: リッチメニュー適用エラー (userId: ${lineUserId}):`, err)
-            }
-        }
-
         // 自動タグ付け処理
         if (channel.auto_reply_tags && channel.auto_reply_tags.length > 0) {
             try {
@@ -76,12 +55,21 @@ async function handler(request: Request) {
                 } else {
                     console.log(`QStash: 自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
                 }
-
-                const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
-                await recalculateAndSwitchUserRichMenu(internalUserId)
             } catch (err) {
                 console.error(`QStash: タグ処理エラー (userId: ${lineUserId}):`, err)
             }
+        }
+
+        // リッチメニューを適用（タグ連動 > 表示期間内 > デフォルト の優先順）。
+        // 以前はデフォルトを付けたあとタグ連動へ切り替えていたが、デフォルトを付けたことを
+        // DB に記録していなかったため、ブロック解除した人などでタグ連動への切り替えが省かれ、
+        // デフォルトのままになっていた。タグを付け終えてから1回で決めて、必ず付け直す。
+        try {
+            const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
+            await recalculateAndSwitchUserRichMenu(internalUserId, { force: true })
+            console.log(`QStash: リッチメニュー適用完了 (userId: ${lineUserId})`)
+        } catch (err) {
+            console.error(`QStash: リッチメニュー適用エラー (userId: ${lineUserId}):`, err)
         }
 
         // フォロートリガーのステップ配信を開始

@@ -396,23 +396,6 @@ async function executeSecondaryTasksDirectly(
     lineUserId: string,
     internalUserId: string
 ) {
-    // デフォルトリッチメニューを適用
-    if (channel.default_rich_menu_id) {
-        try {
-            const { data: richMenu } = await supabase
-                .from('rich_menus')
-                .select('rich_menu_id')
-                .eq('id', channel.default_rich_menu_id)
-                .single()
-
-            if (richMenu?.rich_menu_id) {
-                await lineClient.linkRichMenuToUser(lineUserId, richMenu.rich_menu_id)
-            }
-        } catch (err) {
-            console.error(`リッチメニュー適用エラー (userId: ${lineUserId}):`, err)
-        }
-    }
-
     // 自動タグ付け処理
     if (channel.auto_reply_tags && channel.auto_reply_tags.length > 0) {
         try {
@@ -430,12 +413,18 @@ async function executeSecondaryTasksDirectly(
             } else {
                 console.log(`自動タグ付け完了: ${tagInserts.length} 件 (userId: ${lineUserId})`)
             }
-
-            const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
-            await recalculateAndSwitchUserRichMenu(internalUserId)
         } catch (err) {
             console.error(`タグ処理エラー (userId: ${lineUserId}):`, err)
         }
+    }
+
+    // リッチメニューを適用（タグ連動 > 表示期間内 > デフォルト の優先順）。
+    // qstash-secondary と同じく、タグを付け終えてから1回で決めて必ず付け直す。
+    try {
+        const { recalculateAndSwitchUserRichMenu } = await import('@/lib/rich-menu')
+        await recalculateAndSwitchUserRichMenu(internalUserId, { force: true })
+    } catch (err) {
+        console.error(`リッチメニュー適用エラー (userId: ${lineUserId}):`, err)
     }
 
     // フォロートリガーのステップ配信を開始
