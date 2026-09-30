@@ -7,8 +7,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn, getCookie } from '@/lib/utils'
 import { formatJstDate, formatJstShort, formatJstTime } from '@/lib/reminders/timing'
 import { buildOfferMessage, buildOfferOptions, fillBookingText } from '@/lib/booking/offer'
+import { validateAvailability } from '@/lib/google/availability'
 import type { BookingOfferStatus, BookingSettings, BookingSlot, Reminder, Tag } from '@/types'
-import { CalendarCheck, Loader2, Plus, Save, Trash2 } from 'lucide-react'
+import { CalendarCheck, CalendarSync, Link2, Loader2, Plus, RefreshCw, Save, Trash2, Unlink } from 'lucide-react'
 
 const DEFAULTS: Omit<BookingSettings, 'channel_id' | 'updated_at'> = {
     is_active: false,
@@ -29,11 +30,53 @@ const DEFAULTS: Omit<BookingSettings, 'channel_id' | 'updated_at'> = {
     nudge_text: '{name}さん、面談の日程はいかがでしょうか？\n番号を送るか、下のボタンをタップするだけで大丈夫です。',
     booked_tag_id: null,
     reminder_id: null,
+    slot_source: 'manual',
+    availability: { weekdays: [1, 2, 3, 4, 5], start: '10:00', end: '18:00' },
+    slot_duration_minutes: 60,
+    slot_interval_minutes: 60,
+    buffer_minutes: 0,
+    horizon_days: 14,
+    create_calendar_event: true,
+    add_google_meet: true,
+}
+
+/** カレンダー連携のマイグレーションで追加した設定の列 */
+const CALENDAR_FIELDS = [
+    'slot_source', 'availability', 'slot_duration_minutes', 'slot_interval_minutes',
+    'buffer_minutes', 'horizon_days', 'create_calendar_event', 'add_google_meet',
+] as const
+
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
+
+type GoogleStatus = {
+    configured: boolean
+    redirectUri: string
+    connected: boolean
+    email: string | null
+    lastSyncedAt: string | null
+    lastError: string | null
+}
+
+const GOOGLE_MESSAGES: Record<string, string> = {
+    connected: 'Googleカレンダーと連携しました。「空き枠の作り方」を「Googleカレンダーから自動で作る」にして保存すると、空き枠が作られます。',
+    denied: 'Google の許可画面でキャンセルされました。',
+    not_configured: 'Google の設定（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）がまだありません。手順は docs/booking-and-reminders.md を見てください。',
+    missing_scope: 'カレンダーの権限が許可されませんでした。もう一度連携し、2つの権限にチェックを入れてください。',
+    no_refresh_token: 'Google から長期の許可を受け取れませんでした。Google アカウントの「サードパーティのアクセス」からこのアプリを削除して、もう一度連携してください。',
+    invalid_state: '連携の確認に失敗しました。もう一度お試しください。',
+    forbidden: 'このアカウントを操作する権限がありません。',
+    auth_failed: 'Google の認証に失敗しました。Google Cloud の設定（リダイレクト URI など）を確認してください。',
+    error: '連携に失敗しました。時間をおいてもう一度お試しください。',
 }
 
 type Form = typeof DEFAULTS
 
-type SlotRow = BookingSlot & { line_users: { display_name: string | null; internal_name: string | null } | null }
+type SlotRow = Omit<BookingSlot, 'source' | 'closed_by' | 'meeting_url'> & {
+    source?: BookingSlot['source']
+    closed_by?: BookingSlot['closed_by']
+    meeting_url?: string | null
+    line_users: { display_name: string | null; internal_name: string | null } | null
+}
 
 type OfferRow = {
     id: string
@@ -67,6 +110,10 @@ export default function BookingPage() {
     const [saving, setSaving] = useState(false)
     const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
+    const [google, setGoogle] = useState<GoogleStatus | null>(null)
+    const [googleMessage, setGoogleMessage] = useState<string | null>(null)
+    const [syncing, setSyncing] = useState(false)
+
     const [slotDate, setSlotDate] = useState('')
     const [slotTimes, setSlotTimes] = useState('10:00 13:00 16:00')
     const [slotMessage, setSlotMessage] = useState<string | null>(null)
@@ -85,9 +132,45 @@ export default function BookingPage() {
         const { data } = await query
         if (data && data.length > 0) {
             setChannelId(data[0].channel_id)
-            await fetchAll(data[0].channel_id)
+            await Promise.all([fetchAll(data[0].channel_id), fetchGoogle(data[0].channel_id)])
         }
+        const result = new URLSearchParams(window.location.search).get('google')
+        if (result) setGoogleMessage(GOOGLE_MESSAGES[result] ?? null)
         setLoading(false)
+    }
+
+    const fetchGoogle = async (id: string) => {
+        const res = await fetch(`/api/google/status?channelId=${encodeURIComponent(id)}`)
+        if (res.ok) setGoogle(await res.json())
+    }
+
+    const syncNow = async () => {
+        if (!channelId) return
+        setSyncing(true)
+        setGoogleMessage(null)
+        const res = await fetch('/api/google/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channelId }),
+        })
+        const data = await res.json().catch(() => ({}))
+        setSyncing(false)
+        if (!res.ok) setGoogleMessage(data.error || '同期に失敗しました')
+        else if (data.result?.skipped) setGoogleMessage(data.result.skipped)
+        else setGoogleMessage(`同期しました（新しい枠 ${data.result.created} / 予定が入って締切 ${data.result.closed} / 再開 ${data.result.reopened}）`)
+        await Promise.all([fetchSlotsAndOffers(channelId), fetchGoogle(channelId)])
+    }
+
+    const disconnectGoogle = async () => {
+        if (!channelId || !confirm('Googleカレンダーとの連携を解除しますか？\n空き枠の作り方は「手動」に戻ります。作成済みの空き枠とカレンダーの予定はそのまま残ります。')) return
+        await fetch('/api/google/disconnect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channelId }),
+        })
+        update('slot_source', 'manual')
+        setGoogleMessage('連携を解除しました')
+        await fetchGoogle(channelId)
     }
 
     const fetchAll = async (id: string) => {
@@ -133,15 +216,27 @@ export default function BookingPage() {
             setSaving(false)
             return setSaveMessage('キーワードを1つ以上入力してください')
         }
+        if (form.slot_source === 'calendar') {
+            const invalid = validateAvailability(form.availability, form.slot_duration_minutes)
+            if (invalid) {
+                setSaving(false)
+                return setSaveMessage(invalid)
+            }
+        }
         const supabase = createClient()
-        const { error } = await supabase.from('booking_settings').upsert({
-            ...form,
-            trigger_keywords: keywords,
-            channel_id: channelId,
-            updated_at: new Date().toISOString(),
-        })
+        const row = { ...form, trigger_keywords: keywords, channel_id: channelId, updated_at: new Date().toISOString() }
+        let { error } = await supabase.from('booking_settings').upsert(row)
+        let note = ''
+        if (error && /slot_source|availability|column/i.test(error.message)) {
+            // カレンダー連携の SQL が未実行: それ以外の設定だけ保存する
+            const rest: Record<string, unknown> = { ...row }
+            for (const key of CALENDAR_FIELDS) delete rest[key]
+            ;({ error } = await supabase.from('booking_settings').upsert(rest))
+            note = '（Googleカレンダー連携の設定は、SQL の実行後に保存できます）'
+        }
         setSaving(false)
-        setSaveMessage(error ? `保存に失敗しました: ${error.message}` : '保存しました')
+        setSaveMessage(error ? `保存に失敗しました: ${error.message}` : `保存しました${note}`)
+        if (!error && form.slot_source === 'calendar') await syncNow()
     }
 
     const addSlots = async () => {
@@ -286,7 +381,7 @@ export default function BookingPage() {
                             <Label>プレビュー（いまの空き枠）</Label>
                             <pre className="whitespace-pre-wrap rounded-md border bg-slate-50 dark:bg-slate-900 p-3 text-xs">{preview}</pre>
                         </div>
-                        {textField('booked_text', '確定したときの返信（{日時} に日時が入ります）')}
+                        {textField('booked_text', '確定したときの返信（{日時} に日時、{会議URL} に Meet の URL が入ります）')}
                         {textField('other_text', '「別の日程」を選んだときの返信（その後はあなたが個別に対応）')}
                         {textField('decline_text', '「見送る」を選んだときの返信')}
                         {textField('no_slots_text', '案内できる空き枠がないときの返信（その後はあなたが個別に対応）')}
@@ -335,6 +430,128 @@ export default function BookingPage() {
                 </CardContent>
             </Card>
 
+            {/* Googleカレンダー連携 */}
+            <Card>
+                <CardHeader><CardTitle className="flex items-center gap-2"><CalendarSync className="w-5 h-5" />Googleカレンダー連携</CardTitle></CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                    <p className="text-slate-500">
+                        申込者の手順は変わりません（「個別」→ LINE で番号を選ぶ）。カレンダーはあなたの側だけで使います:
+                        受付時間の中で予定のない時間を空き枠にし、確定したら予定と Google Meet の URL を作ります。
+                    </p>
+                    {googleMessage && <p className="rounded-md bg-slate-50 dark:bg-slate-900 p-2">{googleMessage}</p>}
+
+                    {!google ? (
+                        <p className="text-slate-500">読み込み中…</p>
+                    ) : !google.configured ? (
+                        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 p-3 space-y-1">
+                            <p className="font-medium">最初に Google Cloud での設定が必要です（1回だけ）</p>
+                            <p>手順は docs/booking-and-reminders.md の「Googleカレンダー連携の準備」にあります。</p>
+                            <p>Google Cloud に登録するリダイレクト URI: <code className="break-all">{google.redirectUri}</code></p>
+                        </div>
+                    ) : !google.connected ? (
+                        <Button onClick={() => { window.location.href = `/api/google/connect?channelId=${encodeURIComponent(channelId ?? '')}` }}>
+                            <Link2 className="w-4 h-4" />Googleカレンダーと連携する
+                        </Button>
+                    ) : (
+                        <div className="space-y-2">
+                            <p>連携中: <strong>{google.email ?? 'Google アカウント'}</strong>（メインのカレンダー）</p>
+                            <p className="text-slate-500">
+                                最終同期: {google.lastSyncedAt ? formatJstShort(new Date(google.lastSyncedAt)) : 'まだ'}
+                            </p>
+                            {google.lastError && <p className="text-red-600">{google.lastError}</p>}
+                            <div className="flex gap-2">
+                                <Button variant="outline" size="sm" onClick={syncNow} disabled={syncing}>
+                                    {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}今すぐ同期
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={disconnectGoogle}><Unlink className="w-4 h-4" />連携を解除</Button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="rounded-lg border p-3 space-y-3">
+                        <p className="font-medium">空き枠の作り方</p>
+                        <label className="flex items-center gap-2">
+                            <input type="radio" checked={form.slot_source === 'manual'} onChange={() => update('slot_source', 'manual')} />
+                            手動で登録する（下の「面談の空き枠」で追加）
+                        </label>
+                        <label className={cn('flex items-center gap-2', !google?.connected && 'opacity-50')}>
+                            <input type="radio" disabled={!google?.connected} checked={form.slot_source === 'calendar'}
+                                onChange={() => update('slot_source', 'calendar')} />
+                            Googleカレンダーの空き時間から自動で作る（5分ごとに同期）
+                        </label>
+
+                        {form.slot_source === 'calendar' && (
+                            <div className="space-y-3 pl-6">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="w-20">受付する曜日</span>
+                                    {WEEKDAYS.map((label, day) => (
+                                        <label key={day} className="flex items-center gap-1">
+                                            <input type="checkbox" checked={form.availability.weekdays.includes(day)}
+                                                onChange={e => update('availability', {
+                                                    ...form.availability,
+                                                    weekdays: e.target.checked
+                                                        ? [...form.availability.weekdays, day].sort()
+                                                        : form.availability.weekdays.filter(d => d !== day),
+                                                })} />
+                                            {label}
+                                        </label>
+                                    ))}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="w-20">受付時間</span>
+                                    <Input type="time" className="w-32" value={form.availability.start}
+                                        onChange={e => update('availability', { ...form.availability, start: e.target.value })} />
+                                    〜
+                                    <Input type="time" className="w-32" value={form.availability.end}
+                                        onChange={e => update('availability', { ...form.availability, end: e.target.value })} />
+                                    <span className="text-slate-500">（この時間の外には枠を作りません）</span>
+                                </div>
+                                <div className="grid sm:grid-cols-4 gap-3">
+                                    <div className="space-y-1">
+                                        <Label>面談の長さ（分）</Label>
+                                        <Input type="number" min={15} max={480} value={form.slot_duration_minutes}
+                                            onChange={e => update('slot_duration_minutes', Math.min(480, Math.max(15, Number(e.target.value) || 60)))} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label>開始時刻の間隔（分）</Label>
+                                        <Input type="number" min={15} max={480} value={form.slot_interval_minutes}
+                                            onChange={e => update('slot_interval_minutes', Math.min(480, Math.max(15, Number(e.target.value) || 60)))} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label>前後の余白（分）</Label>
+                                        <Input type="number" min={0} max={240} value={form.buffer_minutes}
+                                            onChange={e => update('buffer_minutes', Math.min(240, Math.max(0, Number(e.target.value) || 0)))} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label>何日先まで</Label>
+                                        <Input type="number" min={1} max={60} value={form.horizon_days}
+                                            onChange={e => update('horizon_days', Math.min(60, Math.max(1, Number(e.target.value) || 14)))} />
+                                    </div>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                    予定がある時間（前後の余白を含む）と、終日の予定がある日は枠にしません。確定の直前にもう一度カレンダーを確認します。
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className={cn('rounded-lg border p-3 space-y-2', !google?.connected && 'opacity-50')}>
+                        <p className="font-medium">確定したとき</p>
+                        <label className="flex items-center gap-2">
+                            <input type="checkbox" disabled={!google?.connected} checked={form.create_calendar_event}
+                                onChange={e => update('create_calendar_event', e.target.checked)} />
+                            Googleカレンダーに予定を作る（取り消したら予定も消す）
+                        </label>
+                        <label className="flex items-center gap-2">
+                            <input type="checkbox" disabled={!google?.connected || !form.create_calendar_event} checked={form.add_google_meet}
+                                onChange={e => update('add_google_meet', e.target.checked)} />
+                            Google Meet の URL を発行する（確定の返信・リマインダーの {'{会議URL}'} に入ります）
+                        </label>
+                    </div>
+                    <p className="text-xs text-slate-500">この欄の設定も、上の「保存」で保存されます。</p>
+                </CardContent>
+            </Card>
+
             {/* 空き枠 */}
             <Card>
                 <CardHeader><CardTitle>面談の空き枠</CardTitle></CardHeader>
@@ -365,6 +582,7 @@ export default function BookingPage() {
                                                 slot.status === 'booked' && 'border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20',
                                                 slot.status === 'closed' && 'opacity-60')}>
                                                 <span className="font-mono">{formatJstTime(new Date(slot.start_at))}</span>
+                                                {slot.source === 'calendar' && <span className="text-xs text-sky-600">カレンダー</span>}
                                                 {slot.status === 'open' && (
                                                     <>
                                                         <span className="text-slate-500">空き</span>
@@ -372,7 +590,10 @@ export default function BookingPage() {
                                                         <button onClick={() => deleteSlot(slot)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
                                                     </>
                                                 )}
-                                                {slot.status === 'closed' && (
+                                                {slot.status === 'closed' && slot.closed_by === 'calendar' && (
+                                                    <span className="text-slate-500">予定あり</span>
+                                                )}
+                                                {slot.status === 'closed' && slot.closed_by !== 'calendar' && (
                                                     <>
                                                         <span className="text-slate-500">締切</span>
                                                         <button className="text-xs underline" onClick={() => setSlotStatus(slot, 'open')}>再開</button>
@@ -384,6 +605,9 @@ export default function BookingPage() {
                                                         <span className="text-emerald-700">
                                                             予約: {slot.line_users?.internal_name || slot.line_users?.display_name || '（名前なし）'}
                                                         </span>
+                                                        {slot.meeting_url && (
+                                                            <a href={slot.meeting_url} target="_blank" rel="noreferrer" className="text-xs underline text-sky-700">Meet</a>
+                                                        )}
                                                         <button className="text-xs underline" onClick={() => cancelBooking(slot)}>取り消す</button>
                                                     </>
                                                 )}

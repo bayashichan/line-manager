@@ -366,6 +366,7 @@ export interface FriendReminder {
     label: string | null
     source: 'manual' | 'booking' | 'mcp'
     status: 'active' | 'completed' | 'cancelled'
+    meeting_url: string | null
     created_at: string
 }
 
@@ -406,7 +407,23 @@ export interface BookingSettings {
     nudge_text: string
     booked_tag_id: string | null
     reminder_id: string | null
+    /** 空き枠の作り方。calendar = Googleカレンダーの空き時間から自動で作る */
+    slot_source: 'manual' | 'calendar'
+    availability: BookingAvailability
+    slot_duration_minutes: number
+    slot_interval_minutes: number
+    buffer_minutes: number
+    horizon_days: number
+    create_calendar_event: boolean
+    add_google_meet: boolean
     updated_at: string
+}
+
+/** 受付する曜日（0=日〜6=土）と時間帯（日本時間 "HH:MM"） */
+export interface BookingAvailability {
+    weekdays: number[]
+    start: string
+    end: string
 }
 
 export interface BookingSlot {
@@ -416,6 +433,11 @@ export interface BookingSlot {
     status: 'open' | 'booked' | 'closed'
     line_user_id: string | null
     booked_at: string | null
+    source: 'manual' | 'calendar'
+    closed_by: 'manual' | 'calendar' | null
+    duration_minutes: number | null
+    google_event_id: string | null
+    meeting_url: string | null
     created_at: string
 }
 

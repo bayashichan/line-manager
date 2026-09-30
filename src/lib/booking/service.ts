@@ -16,6 +16,17 @@ import { LineClient } from '@/lib/line'
 import { logOutgoingMessages } from '@/lib/messaging/chat-log'
 import { cancelFriendReminder, registerFriendReminder } from '@/lib/reminders/service'
 import type { BookingSettings } from '@/types'
+import { isFree } from '@/lib/google/availability'
+import {
+    createCalendarEvent,
+    deleteCalendarEvent,
+    eventIdForBooking,
+    fetchBusy,
+    getAccessToken,
+    getConnection,
+    recordConnectionError,
+    type CalendarConnection,
+} from '@/lib/google/calendar'
 import {
     buildOfferMessage,
     buildOfferOptions,
@@ -26,7 +37,7 @@ import {
 } from './offer'
 
 type AdminClient = ReturnType<typeof createAdminClient>
-type Friend = { id: string; display_name: string | null }
+type Friend = { id: string; display_name: string | null; internal_name?: string | null }
 
 type SlotRow = { id: string; start_at: string; status: string }
 
@@ -74,7 +85,7 @@ export async function handleBookingMessage(
 
     const { data: friend } = await supabase
         .from('line_users')
-        .select('id, display_name')
+        .select('id, display_name, internal_name')
         .eq('channel_id', input.channelId)
         .eq('line_user_id', input.lineUserId)
         .maybeSingle()
@@ -208,22 +219,99 @@ async function applyAnswer(
     }
 
     const startAt = new Date(booked[0].start_at)
+
+    // Googleカレンダーと連携していれば、確定の直前にもう一度予定を確認する
+    // （空き枠の同期は数分おきなので、その間に入った予定と重ならないように）
+    const calendar = await calendarFor(supabase, settings.channel_id)
+    let durationMinutes = settings.slot_duration_minutes ?? 60
+    if (calendar) {
+        const { data: slotRow } = await supabase.from('booking_slots').select('duration_minutes').eq('id', option.slotId).maybeSingle()
+        durationMinutes = slotRow?.duration_minutes ?? durationMinutes
+        if (await hasCalendarConflict(calendar, startAt, durationMinutes, settings.buffer_minutes ?? 0)) {
+            await supabase
+                .from('booking_slots')
+                .update({ status: 'closed', closed_by: 'calendar', line_user_id: null, booked_at: null })
+                .eq('id', option.slotId)
+            await sendNewOffer(supabase, lineClient, settings, friend, replyToken,
+                fillBookingText(settings.taken_text, { name: friend.display_name }))
+            return
+        }
+    }
+
     await supabase
         .from('booking_offers')
         .update({ status: 'booked', booked_slot_id: option.slotId, answered_at: now, responded_at: now })
         .eq('id', offerId)
 
+    // カレンダーに予定を作り、Google Meet の URL を発行する（失敗しても予約は確定させる）
+    let meetingUrl: string | null = null
+    if (calendar && settings.create_calendar_event) {
+        const friendName = friend.internal_name || friend.display_name || '友だち'
+        try {
+            const created = await createCalendarEvent(calendar.token, calendar.connection.calendar_id, {
+                id: eventIdForBooking(option.slotId, now),
+                summary: `${settings.session_label}：${friendName}`,
+                description: [
+                    `LINE: ${friend.display_name ?? ''}${friend.internal_name ? `（${friend.internal_name}）` : ''}`,
+                    'LINE Manager の「面談の日程調整」から自動で作成しました。',
+                ].join('\n'),
+                start: startAt,
+                end: new Date(startAt.getTime() + durationMinutes * 60000),
+                addMeet: settings.add_google_meet,
+            })
+            meetingUrl = created.meetingUrl
+            await supabase
+                .from('booking_slots')
+                .update({ google_event_id: created.eventId, meeting_url: created.meetingUrl, duration_minutes: durationMinutes })
+                .eq('id', option.slotId)
+        } catch (err) {
+            console.error(`カレンダーの予定作成エラー (slot: ${option.slotId}):`, err)
+            await recordConnectionError(supabase, settings.channel_id,
+                `予約の予定をカレンダーに作れませんでした（${startAt.toISOString()}）。手動で追加してください。`)
+        }
+    }
+
     // 応答トークンの期限があるので、確定の返信を先に行う。
     // 返信に失敗しても予約は確定済みなので、タグ付けとリマインダー登録は必ず行う。
     try {
         await reply(supabase, lineClient, replyToken, settings.channel_id, friend, [
-            { type: 'text', text: fillBookingText(settings.booked_text, { name: friend.display_name, target: startAt }) },
+            { type: 'text', text: fillBookingText(settings.booked_text, { name: friend.display_name, target: startAt, meetingUrl }) },
         ])
     } catch (err) {
         console.error(`日程確定の返信エラー (friend: ${friend.id}):`, err)
     }
 
-    await afterBooked(supabase, settings, friend, offerId, startAt)
+    await afterBooked(supabase, settings, friend, offerId, startAt, meetingUrl)
+}
+
+type CalendarAccess = { connection: CalendarConnection; token: string }
+
+/** Googleカレンダーと連携していればアクセストークンを用意する（連携していない・使えないときは null） */
+async function calendarFor(supabase: AdminClient, channelId: string): Promise<CalendarAccess | null> {
+    const connection = await getConnection(supabase, channelId).catch(() => null)
+    if (!connection) return null
+    try {
+        return { connection, token: await getAccessToken(supabase, connection) }
+    } catch (err) {
+        console.error(`Googleカレンダーの認証エラー (${channelId}):`, err)
+        return null
+    }
+}
+
+/** 枠の時間にカレンダーの予定が入っているか（確認できないときは予約を止めない） */
+async function hasCalendarConflict(calendar: CalendarAccess, start: Date, durationMinutes: number, bufferMinutes: number): Promise<boolean> {
+    try {
+        const busy = await fetchBusy(
+            calendar.token,
+            calendar.connection.calendar_id,
+            new Date(start.getTime() - bufferMinutes * 60000),
+            new Date(start.getTime() + (durationMinutes + bufferMinutes) * 60000)
+        )
+        return !isFree(start, durationMinutes, bufferMinutes, busy)
+    } catch (err) {
+        console.error('カレンダーの予定確認エラー:', err)
+        return false
+    }
 }
 
 /** 確定後: タグ付けとリマインダー登録（失敗しても予約自体は確定済み） */
@@ -232,7 +320,8 @@ async function afterBooked(
     settings: BookingSettings,
     friend: Friend,
     offerId: string,
-    startAt: Date
+    startAt: Date,
+    meetingUrl: string | null
 ) {
     if (settings.booked_tag_id) {
         try {
@@ -268,6 +357,7 @@ async function afterBooked(
                 targetAt: startAt,
                 label: settings.session_label,
                 source: 'booking',
+                meetingUrl,
             })
             await supabase.from('booking_offers').update({ friend_reminder_id: friendReminderId }).eq('id', offerId)
         } catch (err) {
@@ -356,7 +446,7 @@ export async function processOfferNudges(
     return result
 }
 
-/** 予約を取り消して枠を空きに戻す（管理画面から）。リマインダーも止める */
+/** 予約を取り消して枠を空きに戻す（管理画面から）。リマインダーとカレンダーの予定も消す */
 export async function cancelBooking(supabase: AdminClient, slotId: string): Promise<void> {
     const { data: offers } = await supabase
         .from('booking_offers')
@@ -367,6 +457,26 @@ export async function cancelBooking(supabase: AdminClient, slotId: string): Prom
         if (offer.friend_reminder_id) await cancelFriendReminder(supabase, offer.friend_reminder_id)
         await supabase.from('booking_offers').update({ status: 'cancelled' }).eq('id', offer.id)
     }
+
+    // カレンダー連携の列がない環境（マイグレーション前）では data が null になり、何もしない
+    const { data: slotInfo } = await supabase
+        .from('booking_slots')
+        .select('channel_id, google_event_id')
+        .eq('id', slotId)
+        .maybeSingle()
+    if (slotInfo?.google_event_id) {
+        const calendar = await calendarFor(supabase, slotInfo.channel_id)
+        if (calendar) {
+            try {
+                await deleteCalendarEvent(calendar.token, calendar.connection.calendar_id, slotInfo.google_event_id)
+            } catch (err) {
+                console.error(`カレンダーの予定削除エラー (slot: ${slotId}):`, err)
+                await recordConnectionError(supabase, slotInfo.channel_id, '取り消した予約の予定をカレンダーから消せませんでした。手動で削除してください。')
+            }
+        }
+        await supabase.from('booking_slots').update({ google_event_id: null, meeting_url: null }).eq('id', slotId)
+    }
+
     await supabase
         .from('booking_slots')
         .update({ status: 'open', line_user_id: null, booked_at: null })

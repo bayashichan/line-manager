@@ -127,11 +127,12 @@ export function describeReminderTiming(timing: ReminderTiming): string {
 
 /**
  * 文面の差し込み。テキストだけを置き換える。
- * {name} 友だちの表示名 / {日時} 10月3日(金) 10:00 / {日付} 10月3日(金) / {時刻} 10:00 / {予定} ラベル
+ * {name} 友だちの表示名 / {日時} 10月3日(土) 10:00 / {日付} 10月3日(土) / {時刻} 10:00 / {予定} ラベル
+ * {会議URL} Googleカレンダー連携で発行した Meet の URL（ないときは空）
  */
 export function applyReminderPlaceholders(
     content: MessageContent[],
-    values: { name?: string | null; target?: Date | null; label?: string | null }
+    values: PlaceholderValues
 ): MessageContent[] {
     return content.map(block => {
         if (block.type !== 'text' || typeof block.text !== 'string') return block
@@ -139,10 +140,15 @@ export function applyReminderPlaceholders(
     })
 }
 
-export function fillPlaceholders(
-    text: string,
-    values: { name?: string | null; target?: Date | null; label?: string | null }
-): string {
+export type PlaceholderValues = {
+    name?: string | null
+    target?: Date | null
+    label?: string | null
+    /** Googleカレンダー連携で発行した Meet などの URL */
+    meetingUrl?: string | null
+}
+
+export function fillPlaceholders(text: string, values: PlaceholderValues): string {
     let result = text.replace(/{name}/g, values.name || '友だち')
     if (values.target) {
         result = result
@@ -152,6 +158,9 @@ export function fillPlaceholders(
     }
     if (values.label !== undefined) {
         result = result.replace(/{予定}/g, values.label || '')
+    }
+    if (values.meetingUrl !== undefined) {
+        result = result.replace(/{会議URL}/g, values.meetingUrl || '')
     }
     return result
 }

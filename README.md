@@ -40,6 +40,7 @@ AIが作ったステップ配信はオフ（下書き）で保存される。
 ### 面談の日程調整・リマインダー配信
 「個別」と送ってきた人に空き枠から候補を自動返信し、番号で確定。確定後は事前質問・録音依頼・前日連絡などを
 予定の日時を基準に自動送信する。定期処理（`/api/cron/tick`）を5分ごとに呼ぶ必要がある。
+Googleカレンダーと連携すると、空き時間から枠を自動で作り、確定時に予定と Google Meet の URL を作成する（任意。`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` が必要）。
 使い方は [docs/booking-and-reminders.md](docs/booking-and-reminders.md)。
 
 ## セットアップ
