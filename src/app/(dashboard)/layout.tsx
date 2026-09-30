@@ -26,6 +26,8 @@ import {
     Loader2,
     ClipboardList,
     MessageSquareReply,
+    CalendarCheck,
+    BellRing,
 } from 'lucide-react'
 
 interface DashboardLayoutProps {
@@ -41,6 +43,8 @@ const navigation = [
     { name: 'リッチメニュー', href: '/dashboard/rich-menus', icon: LayoutGrid },
     { name: 'メッセージ配信', href: '/dashboard/messages', icon: Send },
     { name: 'ステップ配信', href: '/dashboard/step', icon: Layers },
+    { name: '面談の日程調整', href: '/dashboard/booking', icon: CalendarCheck },
+    { name: 'リマインダー', href: '/dashboard/reminders', icon: BellRing },
     { name: '申込フォーム', href: '/dashboard/forms', icon: ClipboardList },
     { name: '申込者', href: '/dashboard/applicants', icon: UserCheck },
     { name: 'チーム', href: '/dashboard/team', icon: UserPlus },

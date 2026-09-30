@@ -8,6 +8,7 @@ import type { Channel } from '@/types'
 import { sendMetaCapiEvent } from '@/lib/meta-capi'
 import { applyPendingApplicantProfiles } from '@/lib/applicants'
 import { getAppBaseUrl } from '@/lib/app-url'
+import { handleBookingMessage } from '@/lib/booking/service'
 
 interface WebhookEvent {
     type: string
@@ -132,7 +133,11 @@ async function processEvent(
             // replyTokenは短時間で失効するため、プロフィール取得(最大3秒)やQStash発行を
             // 含む handleFollow より必ず先に返信すること。順序を入れ替えると応答APIが
             // 使えなくなり、課金対象のプッシュに頼らざるを得なくなる。
-            await handleAutoReply(supabase, lineClient, channel.id, userId, event.message, event.replyToken)
+            // 面談の日程調整（「個別」などのキーワードや、候補への番号の返事）を先に見る。
+            // 返信した場合は応答トークンを使い切っているので、自動応答は行わない。
+            if (!(await handleBookingSafely(supabase, lineClient, channel.id, userId, event.message, event.replyToken))) {
+                await handleAutoReply(supabase, lineClient, channel.id, userId, event.message, event.replyToken)
+            }
             // メッセージ受信時もユーザー情報を更新/作成する（既存の友だち対策）。
             // ただし Meta CAPI は friend追加イベントのみで発火させる。既存友だちの
             // メッセージで再発火させると Lead が重複計上される可能性があるため。
@@ -495,6 +500,32 @@ id,
             current_step: 1,
             next_send_at: nextSendAt,
         })
+    }
+}
+
+/**
+ * 面談の日程調整。失敗しても友だち登録やチャット履歴の保存は続けるため、例外は外に出さない。
+ * 返信した（応答トークンを使った）ときは true。
+ */
+async function handleBookingSafely(
+    supabase: ReturnType<typeof createAdminClient>,
+    lineClient: LineClient,
+    channelId: string,
+    lineUserId: string,
+    message: WebhookEvent['message'],
+    replyToken: string | undefined
+): Promise<boolean> {
+    if (!message || message.type !== 'text' || !message.text) return false
+    try {
+        return await handleBookingMessage(supabase, lineClient, {
+            channelId,
+            lineUserId,
+            text: message.text,
+            replyToken,
+        })
+    } catch (err) {
+        console.error(`日程調整の処理エラー (userId: ${lineUserId}):`, err)
+        return false
     }
 }
 
