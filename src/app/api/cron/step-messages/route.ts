@@ -3,6 +3,9 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient, buildLineMessages, replaceNamePlaceholder } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
 
+/** 送信処理中の実行を他の Cron 実行から守る時間（分） */
+const LEASE_MINUTES = 10
+
 /**
  * ステップ配信を処理するCronジョブ
  * GET /api/cron/step-messages
@@ -52,6 +55,20 @@ export async function GET(request: NextRequest) {
 
         for (const execution of executions) {
             try {
+                // 送信する権利を取る（Cron が重なって同じ人に同じステップを2回送らないため）。
+                // next_send_at を少し先に進めておき、取れた実行だけを処理する。
+                // 途中で落ちても、LEASE_MINUTES 後の実行で再処理される。
+                const { data: leased, error: leaseError } = await supabase
+                    .from('step_executions')
+                    .update({ next_send_at: new Date(Date.now() + LEASE_MINUTES * 60000).toISOString() })
+                    .eq('id', execution.id)
+                    .eq('status', 'active')
+                    .eq('next_send_at', execution.next_send_at)
+                    .select('id')
+                if (leaseError || !leased || leased.length === 0) {
+                    continue
+                }
+
                 const scenario = execution.step_scenarios as any
                 const lineUser = execution.line_users as any
                 const channel = scenario.channels as any

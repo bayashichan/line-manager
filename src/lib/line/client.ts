@@ -12,8 +12,15 @@ export function validateSignature(
     const hash = crypto
         .createHmac('sha256', channelSecret)
         .update(body)
-        .digest('base64')
-    return hash === signature
+        .digest()
+    let received: Buffer
+    try {
+        received = Buffer.from(signature, 'base64')
+    } catch {
+        return false
+    }
+    // 一致するまでの時間差から署名を推測されないよう、一定時間で比較する
+    return received.length === hash.length && crypto.timingSafeEqual(received, hash)
 }
 
 export type LineProfile = {

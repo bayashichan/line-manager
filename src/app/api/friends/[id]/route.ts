@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { getSessionUser, isChannelMember } from '@/lib/auth/channel-access'
 
 export async function DELETE(
     request: NextRequest,
@@ -14,17 +15,23 @@ export async function DELETE(
         )
     }
 
+    // 友だちとチャット履歴を消す操作なので、ログイン中のチャンネルメンバーに限る
+    const sessionUser = await getSessionUser()
+    if (!sessionUser) {
+        return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
+    }
+
     const supabase = createAdminClient()
 
     try {
         // 1. 存在確認
         const { data: user, error: fetchError } = await supabase
             .from('line_users')
-            .select('id, display_name')
+            .select('id, display_name, channel_id')
             .eq('id', id)
             .single()
 
-        if (fetchError || !user) {
+        if (fetchError || !user || !(await isChannelMember(sessionUser.id, user.channel_id))) {
             return NextResponse.json(
                 { error: 'ユーザーが見つかりません' },
                 { status: 404 }

@@ -11,6 +11,8 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { claimMessageForSending } from '@/lib/messaging/claim'
+import { isChannelMember } from '@/lib/auth/channel-access'
 
 /**
  * メッセージ送信
@@ -42,8 +44,15 @@ export async function POST(request: NextRequest) {
             .eq('id', messageId)
             .single()
 
-        if (messageError || !message) {
+        if (messageError || !message || !(await isChannelMember(user.id, message.channel_id))) {
             return NextResponse.json({ error: 'メッセージが見つかりません' }, { status: 404 })
+        }
+
+        // 送信する権利を1回だけ取る（ボタンの連打やAPIの二重呼び出しで2回送らないため）。
+        // 管理画面は「送信中」で作成してからこのAPIを呼ぶ。送信済み・失敗の配信は送り直さない。
+        const claim = await claimMessageForSending(adminClient, messageId, ['sending', 'draft'])
+        if (claim === 'already_taken') {
+            return NextResponse.json({ error: 'この配信はすでに送信処理中か送信済みです' }, { status: 409 })
         }
 
         // コンテンツの変換（アクション付き画像はFlex Messageになる）

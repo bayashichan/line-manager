@@ -1,16 +1,26 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { getCookie } from '@/lib/utils'
+import { getSessionUser, isChannelMember } from '@/lib/auth/channel-access'
 import { cookies } from 'next/headers'
 
 export async function GET(request: Request) {
     try {
+        const user = await getSessionUser()
+        if (!user) {
+            return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
+        }
+
         const supabase = createAdminClient()
         const cookieStore = await cookies()
         const channelId = cookieStore.get('line-manager-channel-id')?.value
 
         if (!channelId) {
             return NextResponse.json({ error: 'チャンネルが選択されていません' }, { status: 400 })
+        }
+
+        // Cookie のチャンネルIDは書き換えられるため、メンバーであることを確認する
+        if (!(await isChannelMember(user.id, channelId))) {
+            return NextResponse.json({ error: 'このチャンネルを表示する権限がありません' }, { status: 403 })
         }
 
         // URLからパラメータ取得
