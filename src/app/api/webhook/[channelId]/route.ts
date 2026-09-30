@@ -7,6 +7,7 @@ import { calculateNextSendAt } from '@/lib/utils'
 import type { Channel } from '@/types'
 import { sendMetaCapiEvent } from '@/lib/meta-capi'
 import { applyPendingApplicantProfiles } from '@/lib/applicants'
+import { getAppBaseUrl } from '@/lib/app-url'
 
 interface WebhookEvent {
     type: string
@@ -88,8 +89,11 @@ export async function POST(
                 .catch(err => console.error('Webhook転送エラー:', err))
         }
 
+        // 副次処理を QStash から呼び戻してもらう先。LINE が実際に届けてきた公開ドメインを使う
+        const appBaseUrl = getAppBaseUrl(request.headers)
+
         for (const event of body.events) {
-            await processEvent(supabase, lineClient, channel, event)
+            await processEvent(supabase, lineClient, channel, event, appBaseUrl)
         }
 
         return NextResponse.json({ success: true })
@@ -109,14 +113,15 @@ async function processEvent(
     supabase: ReturnType<typeof createAdminClient>,
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
-    event: WebhookEvent
+    event: WebhookEvent,
+    appBaseUrl: string
 ) {
     const userId = event.source.userId
     if (!userId) return
 
     switch (event.type) {
         case 'follow':
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true, updateFollowedAt: true, secondaryTasks: 'always' })
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true, updateFollowedAt: true, secondaryTasks: 'always', appBaseUrl })
             break
         case 'unfollow':
             await handleUnfollow(supabase, channel.id, userId)
@@ -136,7 +141,7 @@ async function processEvent(
             // デフォルトリッチメニュー・自動タグ・友だち追加シナリオ（副次処理）は、この時点で初めて
             // 登録された友だち（ツール導入前からの友だち）にだけ行う。メッセージのたびに行うと、
             // タグ連動で切り替えたリッチメニューがデフォルトに戻されてしまうため。
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false, secondaryTasks: 'if_new' })
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false, secondaryTasks: 'if_new', appBaseUrl })
             // チャット履歴に保存
             await handleMessage(supabase, channel.id, userId, event.message)
             break
@@ -184,7 +189,7 @@ async function handleFollow(
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
     userId: string,
-    options: { sendCapi: boolean; updateFollowedAt: boolean; secondaryTasks: 'always' | 'if_new' }
+    options: { sendCapi: boolean; updateFollowedAt: boolean; secondaryTasks: 'always' | 'if_new'; appBaseUrl: string }
 ) {
     try {
         // 副次処理を「新規登録時だけ」にする場合は、登録前に既存かどうかを確認しておく
@@ -322,7 +327,7 @@ async function handleFollow(
         // ユーザー保存は完了済みなので、以下が失敗しても友だち一覧には表示される
         // ====================================================================
         if (options.secondaryTasks === 'always' || isNewUser) {
-            await runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
+            await runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id, options.appBaseUrl)
                 .catch(err => console.error(`副次処理エラー (userId: ${userId}):`, err))
         }
 
@@ -340,7 +345,8 @@ async function runSecondaryTasks(
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
     lineUserId: string,
-    internalUserId: string
+    internalUserId: string,
+    appBaseUrl: string
 ) {
     // Meta CAPI送信は handleFollow 側で follow イベント時のみ呼び出すため、ここでは行わない。
     // リッチメニュー・タグ付け・ステップ配信をQStash経由で非同期実行
@@ -349,14 +355,11 @@ async function runSecondaryTasks(
     if (qstashToken) {
         try {
             const qstashClient = new Client({ token: qstashToken })
-            const baseUrl = process.env.NEXT_PUBLIC_VERCEL_URL
-                ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
-                : process.env.VERCEL_URL
-                    ? `https://${process.env.VERCEL_URL}`
-                    : 'https://line-manager-omega.vercel.app'
 
+            // 呼び戻し先は公開ドメインにする（getAppBaseUrl 参照）。
+            // 以前は VERCEL_URL を使っており、Vercel の保護で 401 になって副次処理が動いていなかった。
             await qstashClient.publishJSON({
-                url: `${baseUrl}/api/webhook/qstash-secondary`,
+                url: `${appBaseUrl}/api/webhook/qstash-secondary`,
                 body: {
                     channelId: channel.id,
                     lineUserId,
