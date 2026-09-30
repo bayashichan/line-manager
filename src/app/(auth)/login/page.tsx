@@ -31,7 +31,7 @@ export default function LoginPage() {
                 return
             }
 
-            router.push('/dashboard')
+            router.push(safeNextPath(new URLSearchParams(window.location.search).get('next')))
             router.refresh()
         } catch (err) {
             setError('ログインに失敗しました')
@@ -106,4 +106,16 @@ export default function LoginPage() {
             </Card>
         </div>
     )
+}
+
+/**
+ * ログイン後の戻り先。AIエージェント連携の同意画面（/oauth/authorize）から
+ * ログインに来た場合に元の画面へ戻すために使う。
+ * 他サイトへ飛ばされないよう、自サイト内のパスだけを受け付ける。
+ */
+function safeNextPath(next: string | null): string {
+    if (!next || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) {
+        return '/dashboard'
+    }
+    return next
 }

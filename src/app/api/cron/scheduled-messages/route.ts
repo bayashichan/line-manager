@@ -10,6 +10,7 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { claimMessageForSending } from '@/lib/messaging/claim'
 
 /**
  * 予約配信を処理するCronジョブ
@@ -59,11 +60,11 @@ export async function GET(request: NextRequest) {
 
         for (const message of scheduledMessages) {
             try {
-                // ステータスを配信中に更新
-                await supabase
-                    .from('messages')
-                    .update({ status: 'sending' })
-                    .eq('id', message.id)
+                // ステータスを配信中に更新（QStash 経由の送信と同時に掴んだ場合は、取れた側だけが送る）
+                const claim = await claimMessageForSending(supabase, message.id, ['scheduled'])
+                if (claim === 'already_taken') {
+                    continue
+                }
 
                 const channel = message.channels as any
 

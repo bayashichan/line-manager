@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { isChannelMember } from '@/lib/auth/channel-access'
 import { calculateNextSendAt } from '@/lib/utils'
 
 /**
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
             .eq('id', scenarioId)
             .single()
 
-        if (!scenario) {
+        if (!scenario || !(await isChannelMember(user.id, scenario.channel_id))) {
             return NextResponse.json({ error: 'シナリオが見つかりません' }, { status: 404 })
         }
 
@@ -70,10 +71,25 @@ export async function POST(request: NextRequest) {
             if (!userIds || userIds.length === 0) {
                 return NextResponse.json({ error: 'ユーザーIDが必要です' }, { status: 400 })
             }
-            targetUserIds = userIds
+            // 他のチャンネルの友だちが混ざらないよう、シナリオと同じチャンネルの友だちだけに絞る
+            const { data: channelUsers } = await adminSupabase
+                .from('line_users')
+                .select('id')
+                .eq('channel_id', scenario.channel_id)
+                .in('id', userIds)
+            targetUserIds = (channelUsers ?? []).map(u => u.id)
         } else if (targetType === 'tag') {
             if (!tagId) {
                 return NextResponse.json({ error: 'タグIDが必要です' }, { status: 400 })
+            }
+            const { data: tag } = await adminSupabase
+                .from('tags')
+                .select('id')
+                .eq('id', tagId)
+                .eq('channel_id', scenario.channel_id)
+                .maybeSingle()
+            if (!tag) {
+                return NextResponse.json({ error: 'タグが見つかりません' }, { status: 404 })
             }
             // タグに紐づくユーザーを取得
             const { data: tagUsers } = await adminSupabase

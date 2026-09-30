@@ -2,7 +2,7 @@ import pg from 'pg';
 const { Client } = pg;
 
 const client = new Client({
-    connectionString: 'postgresql://postgres.ulxmtbcmzykbinwnxvvu:ZX6O2inRYlf6cmqN@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres'
+    connectionString: process.env.DATABASE_URL
 });
 
 async function main() {

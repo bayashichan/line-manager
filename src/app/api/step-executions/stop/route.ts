@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { isChannelMember } from '@/lib/auth/channel-access'
 
 /**
  * ステップ配信を手動で停止するAPI
@@ -27,6 +28,17 @@ export async function POST(request: NextRequest) {
         }
 
         const adminSupabase = createAdminClient()
+
+        // 実行中のシナリオのチャンネルのメンバーだけが停止できる
+        const { data: execution } = await adminSupabase
+            .from('step_executions')
+            .select('id, step_scenarios(channel_id)')
+            .eq('id', executionId)
+            .maybeSingle()
+        const scenario = Array.isArray(execution?.step_scenarios) ? execution?.step_scenarios[0] : execution?.step_scenarios
+        if (!execution || !(await isChannelMember(user.id, scenario?.channel_id))) {
+            return NextResponse.json({ error: '配信が見つかりません' }, { status: 404 })
+        }
 
         // ステータスをcancelledに更新
         const { error } = await adminSupabase

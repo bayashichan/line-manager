@@ -116,7 +116,7 @@ async function processEvent(
 
     switch (event.type) {
         case 'follow':
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true, updateFollowedAt: true })
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: true, updateFollowedAt: true, secondaryTasks: 'always' })
             break
         case 'unfollow':
             await handleUnfollow(supabase, channel.id, userId)
@@ -133,7 +133,10 @@ async function processEvent(
             // メッセージで再発火させると Lead が重複計上される可能性があるため。
             // followed_at も更新しない（メッセージのたびに友だち追加日時が
             // 上書きされ、一覧の登録日・並び順が壊れるため）。
-            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false })
+            // デフォルトリッチメニュー・自動タグ・友だち追加シナリオ（副次処理）は、この時点で初めて
+            // 登録された友だち（ツール導入前からの友だち）にだけ行う。メッセージのたびに行うと、
+            // タグ連動で切り替えたリッチメニューがデフォルトに戻されてしまうため。
+            await handleFollow(supabase, lineClient, channel, userId, { sendCapi: false, updateFollowedAt: false, secondaryTasks: 'if_new' })
             // チャット履歴に保存
             await handleMessage(supabase, channel.id, userId, event.message)
             break
@@ -181,9 +184,21 @@ async function handleFollow(
     lineClient: LineClient,
     channel: { id: string; default_rich_menu_id: string | null; auto_reply_tags: string[] | null },
     userId: string,
-    options: { sendCapi: boolean; updateFollowedAt: boolean }
+    options: { sendCapi: boolean; updateFollowedAt: boolean; secondaryTasks: 'always' | 'if_new' }
 ) {
     try {
+        // 副次処理を「新規登録時だけ」にする場合は、登録前に既存かどうかを確認しておく
+        let isNewUser = false
+        if (options.secondaryTasks === 'if_new') {
+            const { data: existing } = await supabase
+                .from('line_users')
+                .select('id')
+                .eq('channel_id', channel.id)
+                .eq('line_user_id', userId)
+                .maybeSingle()
+            isNewUser = !existing
+        }
+
         // ====================================================================
         // STEP 1: プロフィール取得（3秒タイムアウト付き）
         // ====================================================================
@@ -306,8 +321,10 @@ async function handleFollow(
         // STEP 4: 副次処理を実行（確実に完了させるためawait）
         // ユーザー保存は完了済みなので、以下が失敗しても友だち一覧には表示される
         // ====================================================================
-        await runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
-            .catch(err => console.error(`副次処理エラー (userId: ${userId}):`, err))
+        if (options.secondaryTasks === 'always' || isNewUser) {
+            await runSecondaryTasks(supabase, lineClient, channel, userId, upsertedUser.id)
+                .catch(err => console.error(`副次処理エラー (userId: ${userId}):`, err))
+        }
 
     } catch (error) {
         console.error(`フォロー処理エラー (userId: ${userId}):`, error)
@@ -346,6 +363,11 @@ async function runSecondaryTasks(
                     internalUserId,
                 },
                 retries: 3,
+                // 受け側（qstash-secondary）は CRON_SECRET で認証している。
+                // 付け忘れると 401 で弾かれ、QStash の再試行も尽きて副次処理が実行されない。
+                headers: {
+                    authorization: `Bearer ${process.env.CRON_SECRET ?? ''}`,
+                },
             })
             console.log(`QStash副次処理キュー送信完了 (userId: ${lineUserId})`)
         } catch (err) {

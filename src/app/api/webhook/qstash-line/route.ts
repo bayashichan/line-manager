@@ -10,6 +10,7 @@ import {
 } from '@/lib/line'
 import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { claimMessageForSending } from '@/lib/messaging/claim'
 
 /**
  * QStashからのWebhook受信エンドポイント (予約配信の実行)
@@ -47,17 +48,13 @@ async function handler(request: NextRequest) {
             return NextResponse.json({ error: 'Message not found' }, { status: 404 })
         }
 
-        // 既に送信済み/処理中の場合はスキップ
-        if (message.status === 'sent' || message.status === 'sending') {
-            console.log(`QStash Webhook: メッセージ ${messageId} は既に処理されています。ステータス: ${message.status}`)
+        // 予約中の配信だけを送る。送信済み・処理中に加え、キャンセル済みの配信も送らない。
+        // Cron 経由の送信と同時に掴んだ場合は、取れた側だけが送る（二重送信の防止）。
+        const claim = await claimMessageForSending(adminClient, messageId, ['scheduled'])
+        if (claim === 'already_taken') {
+            console.log(`QStash Webhook: メッセージ ${messageId} は送信対象外です。ステータス: ${message.status}`)
             return NextResponse.json({ success: true, skipped: true })
         }
-
-        // ステータスを送信中に更新
-        await adminClient
-            .from('messages')
-            .update({ status: 'sending' })
-            .eq('id', messageId)
 
         // 2. コンテンツの変換（アクション付き画像はFlex Messageになる）
         //    不正な内容は送る前に弾き、理由を配信履歴に残す
