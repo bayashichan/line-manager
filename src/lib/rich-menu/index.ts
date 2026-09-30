@@ -59,9 +59,13 @@ export async function processRichMenuSwitchOnTagRemove(
 
 /**
  * ユーザーのリッチメニューを再計算して切り替え
+ *
+ * @param options.force DB上の「現在のメニュー」と同じでも LINE に付け直す。
+ *   友だち追加（ブロック解除）時は LINE 側の表示と DB の記録がずれていることがあるため使う。
  */
 export async function recalculateAndSwitchUserRichMenu(
-    lineUserId: string
+    lineUserId: string,
+    options: { force?: boolean } = {}
 ): Promise<void> {
     const supabase = createAdminClient()
 
@@ -82,6 +86,12 @@ export async function recalculateAndSwitchUserRichMenu(
 
     // 変更が必要な場合のみAPI呼び出し
     if (newRichMenuId !== lineUser.current_rich_menu_id) {
+        await switchRichMenu(supabase, lineUser, newRichMenuId)
+        return
+    }
+
+    // 強制時は同じメニューでも付け直す（付けるメニューがない場合は何もしない）
+    if (options.force && newRichMenuId) {
         await switchRichMenu(supabase, lineUser, newRichMenuId)
     }
 }
