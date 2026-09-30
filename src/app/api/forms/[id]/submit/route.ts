@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { DEFAULT_WAITLIST_MESSAGE } from '@/lib/forms/capacity'
-import type { CompletionReplyStatus, Form, FormEntryStatus, FormField, MessageContent } from '@/types'
+import { findLatestOwnResponse, verifyLineAccessToken } from '@/lib/forms/respondent'
+import {
+    buildEditedMessage,
+    DUPLICATE_RESPONSE_ERROR,
+    toMyFormResponse,
+    type FormSubmitMode,
+} from '@/lib/forms/resubmit'
+import type { CompletionReplyStatus, Form, FormEntryStatus, FormField, FormResponse, MessageContent } from '@/types'
 
 type CompletionReplyResult = {
     status: Exclude<CompletionReplyStatus, 'pending'>
@@ -23,15 +30,20 @@ const FORM_FULL_ERROR = 'FORM_FULL'
  * リクエストボディ:
  * - accessToken: LIFFのアクセストークン（本人特定＆なりすまし防止のためサーバー側で検証）
  * - answers: { [fieldId]: string | string[] }
+ * - mode: 'new'（既定）| 'update'（申込済みの内容を修正する。本人が確認したあとに送る）
  *
  * 処理:
  *  1. アクセストークンを検証してLINE userIdを確定
  *  2. 必須項目のバリデーション
- *  3. 回答を保存（残席設定がオンなら、DBのトリガーが定員から申込/キャンセル待ちを決める。
+ *  3. 1人1回までのフォームで申込済みなら、新しい申込にはしない
+ *     - mode='new':    保存せず 409（duplicate）で申込内容を返す（LIFF側で修正するか聞く）
+ *     - mode='update': 申込済みの回答を書き換え、修正の確認メッセージを送って終わる
+ *       （申込状態・タグ・完了時の自動返信は最初の申込のまま）
+ *  4. 回答を保存（残席設定がオンなら、DBのトリガーが定員から申込/キャンセル待ちを決める。
  *     締切設定で満席なら保存されず 409 を返す）
- *  4. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
+ *  5. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
  *     キャンセル待ちならキャンセル待ち用の自動返信を送る
- *  5. 完了タグ（キャンセル待ちならキャンセル待ち用のタグ）を付与し、必要ならリッチメニューを再判定
+ *  6. 完了タグ（キャンセル待ちならキャンセル待ち用のタグ）を付与し、必要ならリッチメニューを再判定
  */
 export async function POST(
     request: NextRequest,
@@ -40,7 +52,8 @@ export async function POST(
     const { id } = await params
 
     try {
-        const { accessToken, answers } = await request.json()
+        const { accessToken, answers, mode } = await request.json()
+        const submitMode: FormSubmitMode = mode === 'update' ? 'update' : 'new'
 
         if (!accessToken) {
             return NextResponse.json({ error: 'アクセストークンがありません' }, { status: 400 })
@@ -115,6 +128,20 @@ export async function POST(
             .eq('channel_id', form.channel_id)
             .eq('line_user_id', userId)
             .maybeSingle()
+        const name = lineUser?.display_name || displayName || '友だち'
+
+        // --------------------------------------------------------------------
+        // 1人1回までのフォーム: 申込済みの人は新しい申込にせず、確認のうえ修正として受け付ける
+        // （マイグレーション適用前は列が無いので、これまでどおり何度でも受け付ける）
+        // --------------------------------------------------------------------
+        if (form.one_response_per_user === true) {
+            const existing = await findLatestOwnResponse(supabase, form.id, userId)
+            if (existing) {
+                if (submitMode !== 'update') return duplicateResponse(existing)
+                return await updateOwnResponse(supabase, form, existing, cleanAnswers, userId, name)
+            }
+            // 修正しようとしたが申込が見つからない（管理画面で削除されたなど）ときは、新しい申込として受け付ける
+        }
 
         // --------------------------------------------------------------------
         // 回答を保存
@@ -134,6 +161,10 @@ export async function POST(
             .select('*')
             .single()
 
+        // 同時に送られた同じ人の申込（送信ボタンの連打など）が先に保存された
+        if (insertError?.message === DUPLICATE_RESPONSE_ERROR) {
+            return duplicateResponse(await findLatestOwnResponse(supabase, form.id, userId))
+        }
         if (insertError?.message === FORM_FULL_ERROR) {
             return NextResponse.json(
                 { error: '定員に達したため、お申し込みの受付を終了しました', full: true },
@@ -164,10 +195,7 @@ export async function POST(
         const completionContent: MessageContent[] = waitlisted
             ? [{ type: 'text', text: form.waitlist_message?.trim() || DEFAULT_WAITLIST_MESSAGE }]
             : (form.completion_message ?? [])
-        const messages = buildCompletionMessages(
-            completionContent,
-            lineUser?.display_name || displayName || '友だち'
-        )
+        const messages = buildCompletionMessages(completionContent, name)
         let replyResult: CompletionReplyResult
         if (messages.length === 0) {
             replyResult = { status: 'skipped', error: '自動返信メッセージが設定されていません' }
@@ -227,50 +255,63 @@ export async function POST(
 }
 
 /**
- * LIFFアクセストークンを検証し、LINE userId を取得する。
- * verify で有効性・チャンネルを確認し、profile で userId を得る。
+ * 申込済みの人からの新しい申込への応答。
+ * 保存はせず、今の申込内容を返す（LIFF側で「申込済みです。内容を修正しますか？」と聞く）。
  */
-async function verifyLineAccessToken(
-    accessToken: string
-): Promise<{ userId: string; displayName: string } | null> {
-    try {
-        const verifyRes = await fetch(
-            `https://api.line.me/oauth2/v2.1/verify?access_token=${encodeURIComponent(accessToken)}`
-        )
-        if (!verifyRes.ok) return null
+function duplicateResponse(existing: FormResponse | null) {
+    return NextResponse.json(
+        {
+            error: 'このフォームには既にお申し込みいただいています',
+            duplicate: true,
+            response: existing ? toMyFormResponse(existing) : null,
+        },
+        { status: 409 }
+    )
+}
 
-        const verifyData = (await verifyRes.json()) as {
-            client_id?: string
-            expires_in?: number
-        }
-        if (!verifyData.expires_in || verifyData.expires_in <= 0) return null
+/**
+ * 申込済みの回答を、本人が修正した内容で書き換える。
+ * 申込状態（席）・タグ・完了時の自動返信の記録は最初の申込のまま変えない。
+ * 修正を受け付けたことと修正後の内容を、本人のトークへ送る（失敗しても修正は完了扱い）。
+ */
+async function updateOwnResponse(
+    supabase: ReturnType<typeof createAdminClient>,
+    form: Form,
+    existing: FormResponse,
+    answers: Record<string, string | string[]>,
+    userId: string,
+    name: string
+) {
+    const { error: updateError } = await supabase
+        .from('form_responses')
+        .update({ answers, edited_at: new Date().toISOString() })
+        .eq('id', existing.id)
 
-        // client_id は参考ログのみ（フォーム用LIFFのログインチャンネルは
-        // NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID と異なる場合があるため、ここでは弾かない）。
-        // 本人特定はトークン有効性 + /v2/profile のuserId取得で担保する。
-        const expectedClientId = process.env.NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID
-        if (expectedClientId && verifyData.client_id && verifyData.client_id !== expectedClientId) {
-            console.warn(
-                `アクセストークンのclient_id(${verifyData.client_id})がNEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID(${expectedClientId})と異なります（処理は継続）`
-            )
-        }
-
-        const profileRes = await fetch('https://api.line.me/v2/profile', {
-            headers: { Authorization: `Bearer ${accessToken}` },
-        })
-        if (!profileRes.ok) return null
-
-        const profile = (await profileRes.json()) as {
-            userId: string
-            displayName: string
-        }
-        if (!profile.userId) return null
-
-        return { userId: profile.userId, displayName: profile.displayName }
-    } catch (err) {
-        console.error('アクセストークン検証エラー:', err)
-        return null
+    if (updateError) {
+        console.error(`申込内容の修正エラー (responseId: ${existing.id}):`, updateError)
+        return NextResponse.json({ error: '申込内容の修正に失敗しました' }, { status: 500 })
     }
+
+    const { data: channel } = await supabase
+        .from('channels')
+        .select('channel_access_token')
+        .eq('id', form.channel_id)
+        .single()
+
+    if (channel?.channel_access_token) {
+        try {
+            const text = buildEditedMessage(name, form.fields ?? [], answers)
+            await new LineClient(channel.channel_access_token).pushMessage(userId, [{ type: 'text', text }])
+        } catch (err) {
+            console.error(`修正の確認メッセージの送信エラー (userId: ${userId}):`, err)
+        }
+    }
+
+    return NextResponse.json({
+        success: true,
+        updated: true,
+        entryStatus: toMyFormResponse(existing).entryStatus,
+    })
 }
 
 /**

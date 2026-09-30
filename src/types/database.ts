@@ -221,6 +221,7 @@ export interface Form {
     full_action: FormFullAction // 満席時の動作
     waitlist_message: string | null // キャンセル待ちの自動返信（NULLなら既定の文面）
     waitlist_tag_ids: string[] | null // キャンセル待ちの人に付けるタグ（完了タグの代わり）
+    one_response_per_user: boolean // 1人1回まで（2回目以降は申込内容の修正として受け付ける）
     created_at: string
     updated_at: string
 }
@@ -259,6 +260,7 @@ export interface FormResponse {
     completion_reply_status: CompletionReplyStatus | null // NULL = 記録なし（機能追加前の回答）
     completion_reply_error: string | null
     completion_reply_at: string | null
+    edited_at: string | null // 申込者本人が最後に修正した日時（NULL = 修正なし）
     created_at: string
 }
 
