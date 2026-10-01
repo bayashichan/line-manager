@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { deliverDueStepMessages } from '@/lib/step/deliver-due'
 import { processDueReminderDeliveries } from '@/lib/reminders/service'
 import { processOfferNudges } from '@/lib/booking/service'
+import { syncAllCalendarSlots } from '@/lib/google/sync'
 import { syncScheduledRichMenus } from '@/lib/rich-menu/sync'
 
 export const dynamic = 'force-dynamic'
@@ -12,6 +13,7 @@ export const maxDuration = 60
  * 数分おきに呼ぶ定期処理（QStash のスケジュールから5分ごとに呼ぶ想定）
  * GET/POST /api/cron/tick
  *
+ * - Googleカレンダーの空き時間を面談の空き枠に反映（連携している場合）
  * - ステップ配信（/api/cron/step-messages と同じ処理）
  * - リマインダー配信
  * - 面談の日程の催促
@@ -29,6 +31,8 @@ async function handler(request: NextRequest) {
     const summary: Record<string, unknown> = {}
 
     const tasks: [string, () => Promise<unknown>][] = [
+        // 空き枠の同期を先に行い、催促で出す候補を最新にする
+        ['calendar', () => syncAllCalendarSlots(supabase)],
         ['steps', () => deliverDueStepMessages()],
         ['reminders', () => processDueReminderDeliveries(supabase)],
         ['nudges', () => processOfferNudges(supabase)],

@@ -138,6 +138,10 @@ export function matchesTriggerKeyword(text: string, keywords: string[]): boolean
 }
 
 /** テンプレート文面の差し込み（{name}・{日時} など） */
-export function fillBookingText(template: string, values: { name?: string | null; target?: Date | null }): string {
-    return fillPlaceholders(template, values).slice(0, TEXT_MAX)
+export function fillBookingText(
+    template: string,
+    values: { name?: string | null; target?: Date | null; meetingUrl?: string | null }
+): string {
+    // {会議URL} が空のときなどに末尾へ残る空行は消す
+    return fillPlaceholders(template, values).trimEnd().slice(0, TEXT_MAX)
 }

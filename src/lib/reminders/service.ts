@@ -25,6 +25,8 @@ export type RegisterReminderInput = {
     targetAt: Date
     label?: string | null
     source: 'manual' | 'booking' | 'mcp'
+    /** {会議URL} に入れる URL（Googleカレンダー連携で発行した Meet など） */
+    meetingUrl?: string | null
     now?: Date
 }
 
@@ -71,6 +73,8 @@ export async function registerFriendReminder(
             target_at: input.targetAt.toISOString(),
             label: input.label ?? reminder.name,
             source: input.source,
+            // 列が未作成（カレンダー連携のマイグレーション前）でも登録できるよう、URL があるときだけ入れる
+            ...(input.meetingUrl ? { meeting_url: input.meetingUrl } : {}),
             status: hasPending ? 'active' : 'completed',
         })
         .select('id')
@@ -124,6 +128,7 @@ type DueDelivery = {
         status: string
         target_at: string
         label: string | null
+        meeting_url?: string | null
         channel_id: string
         line_user_id: string
         line_users: { line_user_id: string; display_name: string | null; is_blocked: boolean } | null
@@ -142,12 +147,12 @@ export async function processDueReminderDeliveries(
 ): Promise<{ sent: number; failed: number; skipped: number; cancelled: number }> {
     const result = { sent: 0, failed: 0, skipped: 0, cancelled: 0 }
 
-    const { data, error } = await supabase
+    const dueQuery = (withMeetingUrl: boolean) => supabase
         .from('reminder_deliveries')
         .select(`
             id, friend_reminder_id, content,
             friend_reminders (
-                id, status, target_at, label, channel_id, line_user_id,
+                id, status, target_at, label, ${withMeetingUrl ? 'meeting_url, ' : ''}channel_id, line_user_id,
                 line_users ( line_user_id, display_name, is_blocked ),
                 channels ( channel_access_token )
             )
@@ -157,6 +162,12 @@ export async function processDueReminderDeliveries(
         .order('send_at')
         .order('step_order')
         .limit(limit)
+
+    let { data, error } = await dueQuery(true)
+    if (error && (error.code === '42703' || error.code === 'PGRST204' || /meeting_url/.test(error.message ?? ''))) {
+        // カレンダー連携のマイグレーション前（meeting_url 列がない）でも送信を止めない
+        ;({ data, error } = await dueQuery(false))
+    }
     if (error) {
         console.error('リマインダーの取得エラー:', error)
         return result
@@ -192,6 +203,7 @@ export async function processDueReminderDeliveries(
                 name: user.display_name,
                 target: new Date(fr.target_at),
                 label: fr.label,
+                meetingUrl: fr.meeting_url ?? null,
             })
             const messages = buildLineMessages(content)
             await new LineClient(fr.channels.channel_access_token).pushMessage(user.line_user_id, messages)
