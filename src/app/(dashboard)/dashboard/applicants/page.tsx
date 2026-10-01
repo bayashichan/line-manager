@@ -342,11 +342,12 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
         if (!form) return
 
         const escape = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
-        const headers = ['申込日時', '申込状態', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', '自動返信', '自動返信の理由', ...form.fields.map(f => f.label)]
+        const headers = ['申込日時', '本人による修正日時', '申込状態', 'LINE表示名', '管理用ネーム', '友だち状態', 'LINE userId', '自動返信', '自動返信の理由', ...form.fields.map(f => f.label)]
         const rows = filtered.map(r => {
             const user = userOf(r)
             return [
                 formatDateTime(r.created_at),
+                r.edited_at ? formatDateTime(r.edited_at) : '',
                 r.entry_status === 'waitlisted' ? 'キャンセル待ち' : '申込',
                 user?.display_name || '',
                 user?.internal_name || '',
@@ -528,6 +529,9 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                                 </div>
                                                 <p className="text-xs text-slate-400 mt-0.5">
                                                     {formatDateTime(r.created_at)} 申込
+                                                    {r.edited_at && (
+                                                        <span className="text-sky-600 dark:text-sky-400"> ・ {formatDateTime(r.edited_at)} 本人が修正</span>
+                                                    )}
                                                     {enteredName && lineName && enteredName !== lineName && (
                                                         <span className="text-slate-500"> ・ LINE: {lineName}</span>
                                                     )}

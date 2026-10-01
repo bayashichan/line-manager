@@ -1,7 +1,22 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
-import type { Tag, RichMenu } from '@/types'
+import { pickTagMenuId, type TagMenuCandidate } from './plan'
+
+export { syncChannelRichMenus, syncScheduledRichMenus, saveRichMenuRules } from './sync'
+export type { RichMenuSyncOptions, RichMenuSyncResult, RichMenuRuleChanges } from './sync'
+
+/*
+ * リッチメニューの出し分けの考え方
+ *
+ * LINE の表示の優先順位は「ユーザー個別のリンク ＞ デフォルトリッチメニュー」。
+ * - 全員向け（基本のメニュー / 表示期間中のメニュー）は LINE のデフォルトとして設定し、
+ *   ユーザーには個別リンクを付けない。付けてしまうと、あとでデフォルトを変えても
+ *   その人には古いメニューが出続ける
+ * - タグ連動メニューだけを、そのタグの人に個別リンクする
+ *
+ * line_users.current_rich_menu_id は「個別リンク中のメニュー」（null = 全員向けに従っている）。
+ */
 
 /**
  * タグ付与時のリッチメニュー切り替え処理
@@ -12,37 +27,7 @@ export async function processRichMenuSwitchOnTagAssign(
 ): Promise<void> {
     const supabase = createAdminClient()
 
-    // タグ情報を取得
-    const { data: tag, error: tagError } = await supabase
-        .from('tags')
-        .select('*, rich_menus(*)')
-        .eq('id', tagId)
-        .single()
-
-    if (tagError || !tag) {
-        console.error('タグ取得エラー:', tagError)
-        return
-    }
-
-    // ユーザー情報を取得
-    const { data: lineUser, error: userError } = await supabase
-        .from('line_users')
-        .select('*, channels(*)')
-        .eq('id', lineUserId)
-        .single()
-
-    if (userError || !lineUser) {
-        console.error('ユーザー取得エラー:', userError)
-        return
-    }
-
-    // 新しいリッチメニューを判定
-    const newRichMenuId = await determineRichMenuForUser(supabase, lineUserId)
-
-    // 変更が必要な場合のみAPI呼び出し
-    if (newRichMenuId !== lineUser.current_rich_menu_id) {
-        await switchRichMenu(supabase, lineUser, newRichMenuId)
-    }
+    await recalculateAndSwitchUserRichMenu(lineUserId)
 
     // タグ付与トリガーのステップ配信を開始
     await startTagStepScenarios(supabase, lineUserId, tagId)
@@ -60,7 +45,10 @@ export async function processRichMenuSwitchOnTagRemove(
 /**
  * ユーザーのリッチメニューを再計算して切り替え
  *
- * @param options.force DB上の「現在のメニュー」と同じでも LINE に付け直す。
+ * タグ連動メニューがあればその人に個別リンクし、なければ個別リンクを外して
+ * 全員向け（LINE のデフォルト）に従わせる。
+ *
+ * @param options.force DB上の「現在のメニュー」と同じでも LINE に送り直す。
  *   友だち追加（ブロック解除）時は LINE 側の表示と DB の記録がずれていることがあるため使う。
  */
 export async function recalculateAndSwitchUserRichMenu(
@@ -72,7 +60,7 @@ export async function recalculateAndSwitchUserRichMenu(
     // ユーザー情報を取得
     const { data: lineUser, error: userError } = await supabase
         .from('line_users')
-        .select('*, channels(*)')
+        .select('id, line_user_id, current_rich_menu_id, channels(channel_access_token)')
         .eq('id', lineUserId)
         .single()
 
@@ -81,130 +69,87 @@ export async function recalculateAndSwitchUserRichMenu(
         return
     }
 
-    // 新しいリッチメニューを判定
-    const newRichMenuId = await determineRichMenuForUser(supabase, lineUserId)
+    const target = await determineTagRichMenuForUser(supabase, lineUserId)
+    const targetMenuId = target?.menuId ?? null
 
-    // 変更が必要な場合のみAPI呼び出し
-    if (newRichMenuId !== lineUser.current_rich_menu_id) {
-        await switchRichMenu(supabase, lineUser, newRichMenuId)
-        return
-    }
+    // 変更が必要な場合のみAPI呼び出し（強制時は同じでも送り直す）
+    if (!options.force && targetMenuId === lineUser.current_rich_menu_id) return
 
-    // 強制時は同じメニューでも付け直す（付けるメニューがない場合は何もしない）
-    if (options.force && newRichMenuId) {
-        await switchRichMenu(supabase, lineUser, newRichMenuId)
+    const channel = lineUser.channels as unknown as { channel_access_token: string } | null
+    if (!channel?.channel_access_token) return
+
+    const lineClient = new LineClient(channel.channel_access_token)
+
+    try {
+        if (target) {
+            await lineClient.linkRichMenuToUser(lineUser.line_user_id, target.lineRichMenuId)
+        } else {
+            await lineClient.unlinkRichMenuFromUser(lineUser.line_user_id)
+        }
+
+        await supabase
+            .from('line_users')
+            .update({ current_rich_menu_id: targetMenuId })
+            .eq('id', lineUser.id)
+
+        console.log(
+            `リッチメニュー切り替え: ${lineUser.line_user_id} -> ${targetMenuId ?? '全員向け（デフォルト）'}`
+        )
+    } catch (error) {
+        console.error('リッチメニュー切り替えエラー:', error)
+        throw error
     }
 }
 
 /**
- * ユーザーに適用すべきリッチメニューを判定
- * 優先順位: タグ連動メニュー > 表示期間内メニュー > デフォルトメニュー
+ * ユーザーに個別リンクすべきタグ連動メニューを判定する（なければ null = 全員向けに従う）。
+ * LINE に未反映のメニューは付けられないので候補から外す。
  */
-async function determineRichMenuForUser(
+async function determineTagRichMenuForUser(
     supabase: ReturnType<typeof createAdminClient>,
     lineUserId: string
-): Promise<string | null> {
-    // ユーザーのチャンネルIDを取得
-    const { data: lineUser } = await supabase
-        .from('line_users')
-        .select('channel_id, channels(default_rich_menu_id)')
-        .eq('id', lineUserId)
-        .single()
-
-    if (!lineUser) return null
-
-    const now = new Date().toISOString()
-
-    // 1. ユーザーの全タグを取得（タグ連動メニュー）を最優先チェック
+): Promise<{ menuId: string; lineRichMenuId: string } | null> {
     const { data: userTags, error } = await supabase
         .from('line_user_tags')
         .select(`
       tags (
         id,
         linked_rich_menu_id,
-        priority
+        priority,
+        rich_menus ( id, rich_menu_id )
       )
     `)
         .eq('line_user_id', lineUserId)
 
-    if (!error) {
-        // JSで安全にソート
-        const sortedTags = (userTags || [])
-            .map(ut => ut.tags as unknown as Tag)
-            .filter(t => t && t.linked_rich_menu_id)
-            .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-
-        if (sortedTags.length > 0) {
-            return sortedTags[0].linked_rich_menu_id
-        }
-    } else {
+    if (error) {
         console.error('ユーザータグ取得エラー:', error)
+        return null
     }
 
-    // 2. 表示期間内のリッチメニューを次にチェック
-    const { data: periodMenus } = await supabase
-        .from('rich_menus')
-        .select('id')
-        .eq('channel_id', lineUser.channel_id)
-        .not('display_period_start', 'is', null)
-        .not('display_period_end', 'is', null)
-        .lte('display_period_start', now)
-        .gte('display_period_end', now)
-        .not('rich_menu_id', 'is', null)
-        .order('created_at', { ascending: false })
-        .limit(1)
-
-    if (periodMenus && periodMenus.length > 0) {
-        return periodMenus[0].id
+    type TagWithMenu = {
+        id: string
+        linked_rich_menu_id: string | null
+        priority: number | null
+        rich_menus: { id: string; rich_menu_id: string | null } | null
     }
 
-    // 3. なければデフォルトリッチメニューを返す
-    return (lineUser?.channels as any)?.default_rich_menu_id || null
-}
+    const tags = (userTags || [])
+        .map(ut => ut.tags as unknown as TagWithMenu | null)
+        .filter((t): t is TagWithMenu => Boolean(t?.linked_rich_menu_id))
 
-/**
- * リッチメニューを切り替え
- */
-async function switchRichMenu(
-    supabase: ReturnType<typeof createAdminClient>,
-    lineUser: { id: string; line_user_id: string; channels: any },
-    newRichMenuId: string | null
-): Promise<void> {
-    const lineClient = new LineClient(lineUser.channels.channel_access_token)
-
-    try {
-        if (newRichMenuId) {
-            // 新しいリッチメニューのLINE IDを取得
-            const { data: richMenu } = await supabase
-                .from('rich_menus')
-                .select('rich_menu_id')
-                .eq('id', newRichMenuId)
-                .single()
-
-            if (richMenu?.rich_menu_id) {
-                await lineClient.linkRichMenuToUser(
-                    lineUser.line_user_id,
-                    richMenu.rich_menu_id
-                )
-            }
-        } else {
-            // リッチメニューをアンリンク
-            await lineClient.unlinkRichMenuFromUser(lineUser.line_user_id)
-        }
-
-        // DBを更新
-        await supabase
-            .from('line_users')
-            .update({ current_rich_menu_id: newRichMenuId })
-            .eq('id', lineUser.id)
-
-        console.log(
-            `リッチメニュー切り替え: ${lineUser.line_user_id} -> ${newRichMenuId}`
-        )
-    } catch (error) {
-        console.error('リッチメニュー切り替えエラー:', error)
-        throw error
+    const lineIdByMenu = new Map<string, string>()
+    for (const tag of tags) {
+        if (tag.rich_menus?.rich_menu_id) lineIdByMenu.set(tag.rich_menus.id, tag.rich_menus.rich_menu_id)
     }
+
+    const candidates: TagMenuCandidate[] = tags.map(t => ({
+        tagId: t.id,
+        linkedMenuId: t.linked_rich_menu_id,
+        priority: t.priority,
+    }))
+
+    const menuId = pickTagMenuId(candidates, new Set(lineIdByMenu.keys()))
+    return menuId ? { menuId, lineRichMenuId: lineIdByMenu.get(menuId)! } : null
 }
 
 /**

@@ -10,6 +10,7 @@ import type { Form } from '@/types'
  * 申込者に見せて問題のない項目のみを返す（channel_access_token 等は返さない）。
  * 残席設定がオンなら残席数と受付状況（availability）も返す。フォームを開いている
  * 間も残席が減っていくので、LIFF側は定期的にこのAPIを呼び直す。
+ * 1人1回までのフォーム（onePerUser）なら、LIFF側は本人が申込済みかを確かめてから開く。
  */
 export async function GET(
     _request: NextRequest,
@@ -55,6 +56,8 @@ export async function GET(
             description: form.description,
             fields: form.fields ?? [],
             availability,
+            // マイグレーション適用前は列が無いので、これまでどおり何度でも受け付ける
+            onePerUser: form.one_response_per_user === true,
         })
     } catch (error) {
         console.error('フォーム取得エラー:', error)

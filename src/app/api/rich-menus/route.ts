@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { isR2Configured, uploadToR2Server } from '@/lib/storage/r2'
+import { getSessionUser, isChannelMember } from '@/lib/auth/channel-access'
+import { syncChannelRichMenus } from '@/lib/rich-menu/sync'
+
+export const maxDuration = 60
 
 /**
  * リッチメニュー一覧取得
@@ -128,9 +132,69 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * リッチメニューをLINE APIに登録
- * POST /api/rich-menus/register
+ * リッチメニュー削除（LINE 上のメニューも消す）
+ * DELETE /api/rich-menus?id=xxx
+ *
+ * 全員向けやタグに設定していた場合は、その設定も外して LINE の表示を揃え直す。
  */
-export async function registerToLine(request: NextRequest) {
-    // この関数は別ルートで実装
+export async function DELETE(request: NextRequest) {
+    const user = await getSessionUser()
+    if (!user) {
+        return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
+    }
+
+    const id = request.nextUrl.searchParams.get('id')
+    if (!id) {
+        return NextResponse.json({ error: 'id が必要です' }, { status: 400 })
+    }
+
+    const admin = createAdminClient()
+    const { data: richMenu } = await admin
+        .from('rich_menus')
+        .select('id, channel_id, rich_menu_id, channels!rich_menus_channel_id_fkey(channel_access_token)')
+        .eq('id', id)
+        .maybeSingle()
+
+    if (!richMenu || !(await isChannelMember(user.id, richMenu.channel_id))) {
+        return NextResponse.json({ error: 'リッチメニューが見つかりません' }, { status: 404 })
+    }
+
+    try {
+        // DB から消す。タグの紐付け・基本のメニュー・各ユーザーの記録は外部キーで自動的に外れる
+        const { error: deleteError } = await admin.from('rich_menus').delete().eq('id', id)
+        if (deleteError) throw deleteError
+
+        // 残った設定どおりに LINE を揃える（このメニューのタグだった人を次の候補へ付け替える）
+        const warnings: string[] = []
+        try {
+            const result = await syncChannelRichMenus(richMenu.channel_id)
+            warnings.push(...result.warnings)
+        } catch (err) {
+            console.error('削除後のリッチメニュー反映エラー:', err)
+            warnings.push('LINEへの反映に失敗しました。「LINEと揃え直す」を押してください。')
+        }
+
+        if (richMenu.rich_menu_id) {
+            const channel = richMenu.channels as unknown as { channel_access_token: string } | null
+            if (channel?.channel_access_token) {
+                const lineClient = new LineClient(channel.channel_access_token)
+                // 全員向けに設定したまま消すと何も表示されなくなるため、先にデフォルトを外す
+                const currentDefault = await lineClient.getDefaultRichMenuId().catch(() => null)
+                if (currentDefault === richMenu.rich_menu_id) {
+                    await lineClient.cancelDefaultRichMenu().catch(() => { })
+                }
+                await lineClient.deleteRichMenu(richMenu.rich_menu_id).catch(err => {
+                    console.error('LINE上のリッチメニュー削除に失敗:', err)
+                })
+            }
+        }
+
+        return NextResponse.json({ success: true, warnings })
+    } catch (error) {
+        console.error('リッチメニュー削除エラー:', error)
+        return NextResponse.json(
+            { error: error instanceof Error ? error.message : '内部サーバーエラー' },
+            { status: 500 }
+        )
+    }
 }

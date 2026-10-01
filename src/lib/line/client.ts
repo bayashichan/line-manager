@@ -41,6 +41,14 @@ export type FriendCheckResult =
     | { status: 'not_friend'; httpStatus: number }
     | { status: 'error'; httpStatus: number; detail: string }
 
+/** LINE API がエラーを返したとき。status で 429（混雑）などを見分けられる */
+export class LineApiError extends Error {
+    constructor(message: string, public readonly status: number) {
+        super(message)
+        this.name = 'LineApiError'
+    }
+}
+
 /**
  * LINE Messaging API クライアント
  */
@@ -248,14 +256,45 @@ export class LineClient {
     }
 
     /**
-     * ユーザーのリッチメニューをアンリンク
+     * ユーザーのリッチメニューをアンリンク（個別設定を外し、デフォルトに従わせる）
      */
     async unlinkRichMenuFromUser(userId: string) {
         const response = await this.request(`/user/${userId}/richmenu`, {
             method: 'DELETE',
         })
-        if (!response.ok) {
+        // 404: もともと個別設定がない。外れている状態なので成功とみなす
+        if (!response.ok && response.status !== 404) {
             throw new Error(`リッチメニューアンリンクに失敗: ${response.status}`)
+        }
+    }
+
+    /**
+     * 複数ユーザー（最大500人）にリッチメニューを一括でリンクする。
+     * LINE 側では非同期に処理され、反映まで数秒かかることがある。
+     */
+    async linkRichMenuToUsers(userIds: string[], richMenuId: string) {
+        const response = await this.request('/richmenu/bulk/link', {
+            method: 'POST',
+            body: JSON.stringify({ richMenuId, userIds }),
+        })
+        if (!response.ok) {
+            const detail = await response.text().catch(() => '')
+            throw new LineApiError(`リッチメニュー一括リンクに失敗: ${response.status}${detail ? ` ${detail}` : ''}`, response.status)
+        }
+    }
+
+    /**
+     * 複数ユーザー（最大500人）の個別リッチメニューを一括で外す。
+     * 外れた人には、そのアカウントのデフォルトリッチメニューが表示される。
+     */
+    async unlinkRichMenuFromUsers(userIds: string[]) {
+        const response = await this.request('/richmenu/bulk/unlink', {
+            method: 'POST',
+            body: JSON.stringify({ userIds }),
+        })
+        if (!response.ok) {
+            const detail = await response.text().catch(() => '')
+            throw new LineApiError(`リッチメニュー一括アンリンクに失敗: ${response.status}${detail ? ` ${detail}` : ''}`, response.status)
         }
     }
 
@@ -267,8 +306,43 @@ export class LineClient {
             method: 'POST',
         })
         if (!response.ok) {
-            throw new Error(`デフォルトリッチメニュー設定に失敗: ${response.status}`)
+            throw new LineApiError(`デフォルトリッチメニュー設定に失敗: ${response.status}`, response.status)
         }
+    }
+
+    /**
+     * Messaging API で設定中のデフォルトリッチメニューのIDを取得する（未設定は null）
+     */
+    async getDefaultRichMenuId(): Promise<string | null> {
+        const response = await this.request('/user/all/richmenu')
+        if (response.status === 404) return null
+        if (!response.ok) {
+            throw new LineApiError(`デフォルトリッチメニュー取得に失敗: ${response.status}`, response.status)
+        }
+        const body = await response.json() as { richMenuId?: string }
+        return body.richMenuId || null
+    }
+
+    /**
+     * Messaging API で設定したデフォルトリッチメニューを解除する
+     */
+    async cancelDefaultRichMenu() {
+        const response = await this.request('/user/all/richmenu', {
+            method: 'DELETE',
+        })
+        if (!response.ok && response.status !== 404) {
+            throw new LineApiError(`デフォルトリッチメニュー解除に失敗: ${response.status}`, response.status)
+        }
+    }
+
+    /**
+     * リッチメニューが LINE 上に存在するか（別の画面で消された・期限切れなどを検知する）
+     */
+    async richMenuExists(richMenuId: string): Promise<boolean> {
+        const response = await this.request(`/richmenu/${richMenuId}`)
+        if (response.ok) return true
+        if (response.status === 404 || response.status === 400) return false
+        throw new LineApiError(`リッチメニュー取得に失敗: ${response.status}`, response.status)
     }
 
     /**
@@ -278,8 +352,9 @@ export class LineClient {
         const response = await this.request(`/richmenu/${richMenuId}`, {
             method: 'DELETE',
         })
-        if (!response.ok) {
-            throw new Error(`リッチメニュー削除に失敗: ${response.status}`)
+        // 404: すでに消えている
+        if (!response.ok && response.status !== 404) {
+            throw new LineApiError(`リッチメニュー削除に失敗: ${response.status}`, response.status)
         }
     }
 

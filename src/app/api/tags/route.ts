@@ -1,5 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { syncChannelRichMenus } from '@/lib/rich-menu/sync'
+
+export const maxDuration = 60
+
+/**
+ * タグとリッチメニューの紐付け・優先度を変えたときに、すでにそのタグが付いている人へ反映する。
+ * 失敗してもタグの保存自体は成功しているので、エラーにはしない。
+ */
+async function applyRichMenusForTagChange(channelId: string): Promise<void> {
+    try {
+        const result = await syncChannelRichMenus(channelId)
+        if (result.warnings.length > 0) console.warn('タグ変更後のリッチメニュー反映:', result.warnings)
+    } catch (err) {
+        console.error('タグ変更後のリッチメニュー反映エラー:', err)
+    }
+}
 
 /**
  * タグ一覧取得
@@ -108,6 +124,11 @@ export async function POST(request: NextRequest) {
             throw error
         }
 
+        // 紐付けたメニューを LINE に反映しておく（このタグを付けた人にすぐ表示できるように）
+        if (tag.linked_rich_menu_id) {
+            await applyRichMenusForTagChange(channelId)
+        }
+
         return NextResponse.json(tag)
     } catch (error) {
         console.error('タグ作成エラー:', error)
@@ -138,6 +159,12 @@ export async function PATCH(request: NextRequest) {
             return NextResponse.json({ error: 'id が必要です' }, { status: 400 })
         }
 
+        const { data: before } = await supabase
+            .from('tags')
+            .select('linked_rich_menu_id, priority')
+            .eq('id', id)
+            .maybeSingle()
+
         const updateData: Record<string, any> = {}
         if (name !== undefined) updateData.name = name
         if (color !== undefined) updateData.color = color
@@ -153,6 +180,15 @@ export async function PATCH(request: NextRequest) {
 
         if (error) {
             throw error
+        }
+
+        // 紐付けるメニューや優先度が変わったら、このタグがすでに付いている人にも反映する
+        const richMenuChanged =
+            !before ||
+            before.linked_rich_menu_id !== tag.linked_rich_menu_id ||
+            ((before.linked_rich_menu_id || tag.linked_rich_menu_id) && before.priority !== tag.priority)
+        if (richMenuChanged) {
+            await applyRichMenusForTagChange(tag.channel_id)
         }
 
         return NextResponse.json(tag)
@@ -184,6 +220,12 @@ export async function DELETE(request: NextRequest) {
             return NextResponse.json({ error: 'id が必要です' }, { status: 400 })
         }
 
+        const { data: before } = await supabase
+            .from('tags')
+            .select('channel_id, linked_rich_menu_id')
+            .eq('id', id)
+            .maybeSingle()
+
         const { error } = await supabase
             .from('tags')
             .delete()
@@ -191,6 +233,11 @@ export async function DELETE(request: NextRequest) {
 
         if (error) {
             throw error
+        }
+
+        // メニューが紐付いたタグだったら、付いていた人を次の候補（なければ全員向け）へ戻す
+        if (before?.linked_rich_menu_id) {
+            await applyRichMenusForTagChange(before.channel_id)
         }
 
         return NextResponse.json({ success: true })

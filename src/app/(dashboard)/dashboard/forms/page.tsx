@@ -27,6 +27,7 @@ import {
     Link as LinkIcon,
     Download,
     Armchair,
+    UserCheck,
 } from 'lucide-react'
 
 // 完了メッセージ用ブロック（テキスト/画像）
@@ -87,6 +88,8 @@ export default function FormsPage() {
     const [fFullAction, setFFullAction] = useState<FormFullAction>('waitlist')
     const [fWaitlistMessage, setFWaitlistMessage] = useState('')
     const [fWaitlistTagIds, setFWaitlistTagIds] = useState<string[]>([])
+    // 重複申込の防止（1人1回まで。2回目以降は申込内容の修正として受け付ける）
+    const [fOnePerUser, setFOnePerUser] = useState(true)
 
     const liffId = process.env.NEXT_PUBLIC_FORM_LIFF_ID
 
@@ -175,6 +178,7 @@ export default function FormsPage() {
         setFFullAction('waitlist')
         setFWaitlistMessage('')
         setFWaitlistTagIds([])
+        setFOnePerUser(true)
         setIsEditing(false)
         setEditingId(null)
     }
@@ -199,6 +203,7 @@ export default function FormsPage() {
         setFFullAction(form.full_action === 'close' ? 'close' : 'waitlist')
         setFWaitlistMessage(form.waitlist_message || '')
         setFWaitlistTagIds(form.waitlist_tag_ids || [])
+        setFOnePerUser(form.one_response_per_user !== false)
         setIsEditing(true)
         if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
     }
@@ -334,6 +339,7 @@ export default function FormsPage() {
             full_action: fFullAction,
             waitlist_message: fWaitlistMessage.trim() || null,
             waitlist_tag_ids: fWaitlistTagIds.length > 0 ? fWaitlistTagIds : null,
+            one_response_per_user: fOnePerUser,
         }
 
         try {
@@ -783,6 +789,31 @@ export default function FormsPage() {
                             )}
                         </div>
 
+                        {/* 重複申込 */}
+                        <div className="space-y-3">
+                            <Label className="text-base flex items-center gap-2">
+                                <UserCheck className="w-4 h-4" />
+                                重複申込
+                            </Label>
+                            <label className="flex items-start gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={fOnePerUser}
+                                    onChange={(e) => setFOnePerUser(e.target.checked)}
+                                    className="mt-0.5 w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                />
+                                <span>
+                                    <span className="block text-sm">同じ人からの申込は1回までにする（2回目以降は申込内容の修正として受け付ける）</span>
+                                    <span className="block text-xs text-slate-500 mt-0.5">
+                                        申込済みの人がフォームを開くと「お申し込み済みです。内容を修正しますか？」と表示します。修正すると、新しい申込は増やさずに今の申込内容を書き換え、修正後の内容をトークへ送ります（申込状態・タグ・完了時の自動返信は最初の申込のまま）。
+                                    </span>
+                                    <span className="block text-xs text-slate-400 mt-0.5">
+                                        問い合わせやアンケートなど、何度でも送ってよいフォームはオフにしてください。
+                                    </span>
+                                </span>
+                            </label>
+                        </div>
+
                         {/* 公開設定 */}
                         <label className="flex items-center gap-2 cursor-pointer">
                             <input
@@ -826,6 +857,7 @@ export default function FormsPage() {
                                                 </span>
                                                 <span className="text-xs text-slate-400">
                                                     {form.fields.length}項目 ・ 回答 {responseCounts[form.id] ?? 0}件
+                                                    {form.one_response_per_user && ' ・ 1人1回まで'}
                                                 </span>
                                             </div>
                                             <CapacityBadge
@@ -959,7 +991,7 @@ function CapacityBadge({ form, confirmedCount, waitlistCount }: { form: Form; co
 // =============================================================================
 type FormResponseRow = Pick<
     FormResponse,
-    'id' | 'answers' | 'created_at' | 'entry_status' | 'completion_reply_status' | 'completion_reply_error'
+    'id' | 'answers' | 'created_at' | 'edited_at' | 'entry_status' | 'completion_reply_status' | 'completion_reply_error'
 >
 
 const ENTRY_STATUS_LABELS: Record<FormEntryStatus, string> = {
@@ -1098,9 +1130,10 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
             const s = v ?? ''
             return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
         }
-        const headers = ['送信日時', '申込状態', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
+        const headers = ['送信日時', '本人による修正日時', '申込状態', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
         const rows = responses.map((r) => [
             formatDateTime(r.created_at),
+            r.edited_at ? formatDateTime(r.edited_at) : '',
             entryStatusText(r),
             completionReplyLabel(r),
             completionReplyDetail(r) || '',
@@ -1173,7 +1206,14 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                             <tbody>
                                 {responses.map((r, i) => (
                                     <tr key={r.id} className={cn(i % 2 === 1 && 'bg-slate-50 dark:bg-slate-800/40')}>
-                                        <td className="px-3 py-2 whitespace-nowrap text-slate-500 align-top">{formatDateTime(r.created_at)}</td>
+                                        <td className="px-3 py-2 whitespace-nowrap text-slate-500 align-top">
+                                            {formatDateTime(r.created_at)}
+                                            {r.edited_at && (
+                                                <span className="block text-xs text-sky-600 dark:text-sky-400">
+                                                    {formatDateTime(r.edited_at)} 本人が修正
+                                                </span>
+                                            )}
+                                        </td>
                                         {showEntryStatus && (
                                             <td className="px-3 py-2 align-top whitespace-nowrap">
                                                 <span className={cn(

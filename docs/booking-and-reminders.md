@@ -121,7 +121,7 @@ Vercel の「Settings」→「Environment Variables」で次の2つを追加 →
 
 **C. Supabase で SQL を実行**
 
-[`supabase/migrations/20261002000000_add_google_calendar.sql`](../supabase/migrations/20261002000000_add_google_calendar.sql)
+[`supabase/migrations/20261003000000_add_google_calendar.sql`](../supabase/migrations/20261003000000_add_google_calendar.sql)
 （追加だけの変更です。未実行でも日程調整・リマインダーはこれまでどおり動きます）
 
 ### 連携する
