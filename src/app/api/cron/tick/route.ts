@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { deliverDueStepMessages } from '@/lib/step/deliver-due'
 import { processDueReminderDeliveries } from '@/lib/reminders/service'
 import { processOfferNudges } from '@/lib/booking/service'
+import { syncScheduledRichMenus } from '@/lib/rich-menu/sync'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -14,6 +15,7 @@ export const maxDuration = 60
  * - ステップ配信（/api/cron/step-messages と同じ処理）
  * - リマインダー配信
  * - 面談の日程の催促
+ * - リッチメニューの表示期間による切り替え（全員向けメニューの付け替え）
  *
  * どれかが失敗しても、ほかの処理は続ける。
  */
@@ -30,6 +32,7 @@ async function handler(request: NextRequest) {
         ['steps', () => deliverDueStepMessages()],
         ['reminders', () => processDueReminderDeliveries(supabase)],
         ['nudges', () => processOfferNudges(supabase)],
+        ['richMenus', () => syncScheduledRichMenus(supabase)],
     ]
     for (const [name, run] of tasks) {
         try {

@@ -2,10 +2,13 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent, Textarea } from '@/components/ui'
+import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent, Textarea, useToast } from '@/components/ui'
+import { RichMenuRulesPanel, formatMenuDate } from '@/components/rich-menu-rules-panel'
 import { cn, getCookie } from '@/lib/utils'
-import type { RichMenu, RichMenuArea } from '@/types'
+import type { RichMenu, RichMenuArea, Tag } from '@/types'
 import { isAreaConfigured } from '@/lib/rich-menu/areas'
+import { pickAllUsersMenu } from '@/lib/rich-menu/plan'
+import type { RichMenuSyncResult } from '@/lib/rich-menu/sync'
 import { uploadToR2 } from '@/lib/storage/upload-client'
 import {
     Plus,
@@ -14,20 +17,33 @@ import {
     Save,
     Upload,
     Star,
-    StarOff,
     Loader2,
     Image as ImageIcon,
     X,
     Cloud,
-    CloudOff,
     MousePointer,
     LayoutTemplate,
     Grid,
-    Calendar,
-    Tag,
+    Tag as TagIcon,
     Clock,
     AlertTriangle,
+    Users,
+    CalendarClock,
 } from 'lucide-react'
+
+/** 反映結果を一言にまとめる */
+const summarizeSyncResult = (result: RichMenuSyncResult): string => {
+    const parts: string[] = []
+    if (result.allUsersMenu) {
+        parts.push(`全員向け:「${result.allUsersMenu.name}」`)
+    }
+    if (result.linked > 0) parts.push(`タグ別メニュー: ${result.linked}人`)
+    if (result.unlinked > 0) parts.push(`全員向けに合わせた人: ${result.unlinked}人`)
+    if (result.published.length > 0) {
+        parts.push(`LINEに反映したメニュー: ${result.published.map(m => `「${m.name}」`).join('')}`)
+    }
+    return parts.length > 0 ? parts.join(' / ') : '変更はありませんでした'
+}
 
 import {
     MENU_WIDTH,
@@ -52,13 +68,15 @@ const toDatetimeLocalValue = (value: string | null | undefined): string => {
 
 export default function RichMenusPage() {
     const [richMenus, setRichMenus] = useState<RichMenu[]>([])
-    const [tags, setTags] = useState<any[]>([]) // Tag type should be imported or defined
+    const [tags, setTags] = useState<Tag[]>([])
     const [loading, setLoading] = useState(true)
     const [currentChannelId, setCurrentChannelId] = useState<string | null>(null)
     const [isCreating, setIsCreating] = useState(false)
     const [editingMenu, setEditingMenu] = useState<RichMenu | null>(null)
     const [saving, setSaving] = useState(false)
-    const [registering, setRegistering] = useState<string | null>(null)
+    // LINEへの反映中（表示ルールの変更・保存後の反映）
+    const [applying, setApplying] = useState(false)
+    const { toast } = useToast()
 
     // フォーム
     const [formName, setFormName] = useState('')
@@ -69,7 +87,8 @@ export default function RichMenusPage() {
     // New fields
     const [formDisplayStart, setFormDisplayStart] = useState<string>('')
     const [formDisplayEnd, setFormDisplayEnd] = useState<string>('')
-    const [formTargetTagId, setFormTargetTagId] = useState<string>('')
+    // このメニューを表示するタグ（複数可）
+    const [formTagIds, setFormTagIds] = useState<string[]>([])
 
     // メニューの高さ（大: 1686 / 小: 843）。画像のリサイズ先とタップ領域の座標系を兼ねる
     const [formMenuHeight, setFormMenuHeight] = useState<number>(MENU_HEIGHT_LARGE)
@@ -160,7 +179,7 @@ export default function RichMenusPage() {
         setFormAreas([])
         setFormDisplayStart('')
         setFormDisplayEnd('')
-        setFormTargetTagId('')
+        setFormTagIds([])
         setFormMenuHeight(MENU_HEIGHT_LARGE)
         setLayoutRows([3, 3])
         setPreviewImageHeight(null)
@@ -191,9 +210,8 @@ export default function RichMenusPage() {
         // 壁時計表現に変換する（toISOStringだとUTCのまま表示され、時差分ずれる）
         setFormDisplayStart(toDatetimeLocalValue(menu.display_period_start))
         setFormDisplayEnd(toDatetimeLocalValue(menu.display_period_end))
-        // Find linked tag
-        const linkedTag = tags.find(t => t.linked_rich_menu_id === menu.id)
-        setFormTargetTagId(linkedTag ? linkedTag.id : '')
+        // このメニューを表示しているタグ
+        setFormTagIds(tags.filter(t => t.linked_rich_menu_id === menu.id).map(t => t.id))
 
         setIsCreating(false)
     }
@@ -328,8 +346,75 @@ export default function RichMenusPage() {
 
 
 
+    /**
+     * 表示ルールを保存して LINE に反映する（サーバー側で登録・付け替え・古い版の削除まで行う）
+     */
+    const applyRules = async (
+        payload: {
+            defaultMenuId?: string | null
+            tagMenus?: { tagId: string; menuId: string | null }[]
+            menuTags?: { menuId: string; tagIds: string[] }
+            editedMenuIds?: string[]
+            force?: boolean
+        },
+        successTitle: string
+    ): Promise<boolean> => {
+        if (!currentChannelId) return false
+
+        setApplying(true)
+        try {
+            const response = await fetch('/api/rich-menus/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channelId: currentChannelId, ...payload }),
+            })
+            const data = await response.json().catch(() => ({}))
+
+            if (!response.ok) {
+                throw new Error(data.error || 'LINEへの反映に失敗しました')
+            }
+
+            const result = data as RichMenuSyncResult
+            const skipped = result.published
+                .filter(m => m.skippedAreaNumbers.length > 0)
+                .map(m => `「${m.name}」のエリア ${m.skippedAreaNumbers.join(', ')} はアクション未入力のため、タップしても何も起きません。`)
+
+            toast({
+                title: successTitle,
+                description: [summarizeSyncResult(result), ...skipped].join('\n'),
+            })
+
+            if (result.warnings.length > 0) {
+                toast({
+                    title: '一部をLINEに反映できませんでした',
+                    description: result.warnings.join('\n'),
+                    variant: 'destructive',
+                })
+            }
+            return true
+        } catch (error) {
+            console.error('リッチメニュー反映エラー:', error)
+            toast({
+                title: 'LINEへの反映に失敗しました',
+                description: error instanceof Error ? error.message : String(error),
+                variant: 'destructive',
+            })
+            return false
+        } finally {
+            await fetchData(currentChannelId)
+            setApplying(false)
+        }
+    }
+
     const handleSave = async () => {
         if (!formName.trim() || !currentChannelId) return
+
+        if (editingMenu?.is_default && !formIsDefault && !confirm(
+            '「全員に使う」を外すと、タグ別の設定がない人に表示するメニューがなくなります（LINE公式アカウントマネージャーの設定に従います）。\n' +
+            '別のメニューを全員に使う場合は、そのメニューの「全員にこれを使う」を押すと自動で切り替わります。このまま保存しますか？'
+        )) {
+            return
+        }
 
         setSaving(true)
         const supabase = createClient()
@@ -359,157 +444,126 @@ export default function RichMenusPage() {
             const periodStart = formDisplayStart ? new Date(formDisplayStart).toISOString() : null
             const periodEnd = formDisplayEnd ? new Date(formDisplayEnd).toISOString() : null
 
-            if (editingMenu) {
-                savedMenuId = editingMenu.id
-                await supabase
-                    .from('rich_menus')
-                    .update({
-                        name: formName,
-                        image_url: imageUrl,
-                        is_default: formIsDefault,
-                        areas: formAreas,
-                        display_period_start: periodStart,
-                        display_period_end: periodEnd,
-                    })
-                    .eq('id', editingMenu.id)
-            } else {
-                if (formIsDefault) {
-                    await supabase
-                        .from('rich_menus')
-                        .update({ is_default: false })
-                        .eq('channel_id', currentChannelId)
-                }
+            // 中身（名前・画像・タップ領域・表示期間）だけを保存する。
+            // 「全員に使う」「タグ」の設定は LINE への反映と一緒にサーバー側で保存する
+            const content = {
+                name: formName,
+                image_url: imageUrl,
+                areas: formAreas,
+                display_period_start: periodStart,
+                display_period_end: periodEnd,
+            }
 
+            if (editingMenu) {
+                const { error } = await supabase
+                    .from('rich_menus')
+                    .update(content)
+                    .eq('id', editingMenu.id)
+                if (error) throw error
+                savedMenuId = editingMenu.id
+            } else {
                 const { data: inserted, error } = await supabase
                     .from('rich_menus')
-                    .insert({
-                        channel_id: currentChannelId,
-                        name: formName,
-                        image_url: imageUrl,
-                        is_default: formIsDefault,
-                        areas: formAreas,
-                        display_period_start: periodStart,
-                        display_period_end: periodEnd,
-                    })
+                    .insert({ channel_id: currentChannelId, is_default: false, ...content })
                     .select()
                     .single()
-
-                if (inserted) savedMenuId = inserted.id
+                if (error) throw error
+                savedMenuId = inserted.id
             }
 
-            // Tag Linking Logic
-            if (savedMenuId) {
-                // 1. Clear existing links to this menu (if any, or if we want to move it)
-                // Actually if specific tag is selected, we link it.
-                // If NO tag is selected (formTargetTagId === ''), we should remove link from any tag that points to this menu?
-                // Yes, if editing.
+            if (!savedMenuId) throw new Error('保存に失敗しました')
 
-                // First, unlink this menu from ALL tags to start fresh (or just the one that was linked)
-                // Simpler: Set linked_rich_menu_id = NULL where linked_rich_menu_id = savedMenuId
-                await supabase
-                    .from('tags')
-                    .update({ linked_rich_menu_id: null })
-                    .eq('linked_rich_menu_id', savedMenuId)
+            const wasDefault = editingMenu?.is_default ?? false
+            const defaultChanged = formIsDefault !== wasDefault
+            const originalTagIds = editingMenu
+                ? tags.filter(t => t.linked_rich_menu_id === editingMenu.id).map(t => t.id)
+                : []
+            const tagsChanged =
+                formTagIds.length !== originalTagIds.length ||
+                formTagIds.some(id => !originalTagIds.includes(id))
 
-                // 2. If a tag is selected, link it
-                if (formTargetTagId) {
-                    await supabase
-                        .from('tags')
-                        .update({ linked_rich_menu_id: savedMenuId })
-                        .eq('id', formTargetTagId)
-                }
-            }
-
-            // デフォルト設定の排他制御（既存のものを外す）はDBのトリガーか、ここでやる
-            // （簡易的にここで他のis_defaultをfalseにする処理も入れるべきだが省略）
-
-            await fetchData(currentChannelId)
             resetForm()
+
+            // 使用中のメニューなら、編集した内容で LINE 上のメニューを作り直して付け替える
+            await applyRules(
+                {
+                    editedMenuIds: [savedMenuId],
+                    ...(defaultChanged ? { defaultMenuId: formIsDefault ? savedMenuId : null } : {}),
+                    ...(tagsChanged ? { menuTags: { menuId: savedMenuId, tagIds: formTagIds } } : {}),
+                    // 表示する相手を変えたときは、全員の表示を LINE に送り直して確実に揃える
+                    force: defaultChanged || tagsChanged,
+                },
+                '保存してLINEに反映しました'
+            )
         } catch (error) {
             console.error('保存エラー:', error)
-        }
-
-        setSaving(false)
-    }
-
-    const handleDelete = async (menuId: string) => {
-        if (!confirm('このリッチメニューを削除しますか？')) return
-        const supabase = createClient()
-        await supabase.from('rich_menus').delete().eq('id', menuId)
-        if (currentChannelId) await fetchData(currentChannelId)
-    }
-
-    const handleSetDefault = async (menuId: string) => {
-        if (!currentChannelId) return
-        const supabase = createClient()
-        await supabase.from('rich_menus').update({ is_default: false }).eq('channel_id', currentChannelId)
-        await supabase.from('rich_menus').update({ is_default: true }).eq('id', menuId)
-        await fetchData(currentChannelId)
-    }
-
-    const handleRegisterToLine = async (menuId: string) => {
-        // LINEは空のアクションを受け付けないため、登録前に未設定エリアを確認する
-        const target = richMenus.find(m => m.id === menuId)
-        const areas = target?.areas || []
-        const unsetAreaNumbers = areas
-            .map((area, index) => (isAreaConfigured(area) ? null : index + 1))
-            .filter((n): n is number => n !== null)
-
-        if (areas.length > 0 && unsetAreaNumbers.length === areas.length) {
-            alert('タップ領域のアクションが未入力です。\n編集画面で各エリアにメッセージ本文またはURLを入力し、保存してから登録してください。')
-            return
-        }
-
-        if (unsetAreaNumbers.length > 0) {
-            const ok = confirm(
-                `エリア ${unsetAreaNumbers.join(', ')} のアクションが未入力です。\n` +
-                'これらの領域はタップしても何も起こらない状態で登録されます。続行しますか？'
-            )
-            if (!ok) return
-        }
-
-        setRegistering(menuId)
-        try {
-            const response = await fetch('/api/rich-menus/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ richMenuId: menuId }),
+            toast({
+                title: '保存に失敗しました',
+                description: error instanceof Error ? error.message : String(error),
+                variant: 'destructive',
             })
-
-            const data = await response.json()
-
-            if (!response.ok) {
-                const errorMsg = data.error || 'LINE APIへの登録に失敗しました'
-                const debugInfo = data.details ? `\n詳細: ${JSON.stringify(data.details, null, 2)}` : ''
-                throw new Error(`${errorMsg}${debugInfo}`)
-            }
-
-            alert('LINE APIへの登録が完了しました！')
-            if (currentChannelId) await fetchData(currentChannelId)
-        } catch (error: any) {
-            console.error('Registration Error:', error)
-            alert(`エラー: ${error.message}`)
+        } finally {
+            setSaving(false)
         }
-        setRegistering(null)
     }
 
-    const handleUnregisterFromLine = async (menuId: string) => {
-        if (!confirm('LINE APIからこのリッチメニューを削除しますか？')) return
-        setRegistering(menuId)
+    const handleDelete = async (menu: RichMenu) => {
+        const usage: string[] = []
+        if (menu.is_default) usage.push('全員向け')
+        const linkedTagNames = tags.filter(t => t.linked_rich_menu_id === menu.id).map(t => t.name)
+        if (linkedTagNames.length > 0) usage.push(`タグ「${linkedTagNames.join('」「')}」`)
+
+        const message = usage.length > 0
+            ? `「${menu.name}」は${usage.join('・')}に表示中です。\n削除すると、その人たちには${menu.is_default ? '（全員向けがなくなるため）LINE公式アカウントマネージャーで設定したメニュー' : '全員向けのメニュー'}が表示されます。削除しますか？`
+            : `「${menu.name}」を削除しますか？`
+        if (!confirm(message)) return
+
+        setApplying(true)
         try {
-            const response = await fetch(`/api/rich-menus/register?richMenuId=${menuId}`, { method: 'DELETE' })
-            const data = await response.json()
+            const response = await fetch(`/api/rich-menus?id=${menu.id}`, { method: 'DELETE' })
+            const data = await response.json().catch(() => ({}))
+            if (!response.ok) throw new Error(data.error || '削除に失敗しました')
 
-            if (!response.ok) {
-                throw new Error(data.error || '削除に失敗しました')
+            toast({ title: `「${menu.name}」を削除しました` })
+            if (data.warnings?.length > 0) {
+                toast({ title: '一部をLINEに反映できませんでした', description: data.warnings.join('\n'), variant: 'destructive' })
             }
-
-            alert('LINE APIから削除しました')
+        } catch (error) {
+            toast({
+                title: '削除に失敗しました',
+                description: error instanceof Error ? error.message : String(error),
+                variant: 'destructive',
+            })
+        } finally {
             if (currentChannelId) await fetchData(currentChannelId)
-        } catch (error: any) {
-            alert(`エラー: ${error.message}`)
+            setApplying(false)
         }
-        setRegistering(null)
+    }
+
+    /** ワンタッチで「全員にこのメニューを使う」 */
+    const handleSetDefault = (menuId: string | null) => {
+        const name = menuId ? richMenus.find(m => m.id === menuId)?.name : null
+        applyRules(
+            { defaultMenuId: menuId },
+            name ? `「${name}」を全員に表示しました` : '全員向けのメニューを外しました'
+        )
+    }
+
+    /** ワンタッチで「このタグの人にはこのメニューを使う」 */
+    const handleSetTagMenu = (tagId: string, menuId: string | null) => {
+        const tagName = tags.find(t => t.id === tagId)?.name ?? ''
+        const menuName = menuId ? richMenus.find(m => m.id === menuId)?.name : null
+        applyRules(
+            { tagMenus: [{ tagId, menuId }] },
+            menuName
+                ? `タグ「${tagName}」の人に「${menuName}」を表示しました`
+                : `タグ「${tagName}」のメニュー設定を外しました`
+        )
+    }
+
+    /** 全員の表示を設定どおりに LINE へ送り直す */
+    const handleResync = () => {
+        applyRules({ force: true }, 'LINEと揃え直しました')
     }
 
     // LINEのリッチメニュー画像は1MBまで。超えるとアップロード時に413で弾かれる
@@ -646,6 +700,9 @@ export default function RichMenusPage() {
         setFormAreas(formAreas.filter((_, i) => i !== index))
     }
 
+    // いま全員向けに表示しているメニュー（表示期間中のメニュー ＞ 基本のメニュー）
+    const allUsersMenu = pickAllUsersMenu(richMenus, new Date())
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-64">
@@ -670,6 +727,17 @@ export default function RichMenusPage() {
                     リッチメニューを追加
                 </Button>
             </div>
+
+            {!isCreating && !editingMenu && richMenus.length > 0 && (
+                <RichMenuRulesPanel
+                    menus={richMenus}
+                    tags={tags}
+                    applying={applying}
+                    onSetDefault={handleSetDefault}
+                    onSetTagMenu={handleSetTagMenu}
+                    onResync={handleResync}
+                />
+            )}
 
             {(isCreating || editingMenu) && (
                 <Card>
@@ -914,74 +982,97 @@ export default function RichMenusPage() {
                             />
                         </div>
 
-                        <div className="flex items-center gap-2">
-                            <input
-                                type="checkbox"
-                                id="isDefault"
-                                checked={formIsDefault}
-                                onChange={(e) => setFormIsDefault(e.target.checked)}
-                                className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                            />
-                            <Label htmlFor="isDefault" className="cursor-pointer">
-                                デフォルトメニューに設定
-                            </Label>
-                        </div>
-
-                        {/* 詳細設定（期間・タグ） */}
+                        {/* このメニューを見せる相手 */}
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl space-y-4 border border-slate-200 dark:border-slate-700">
                             <h3 className="font-medium text-sm flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                                <Clock className="w-4 h-4" />
-                                表示条件設定
+                                <Users className="w-4 h-4" />
+                                このメニューを見せる相手
                             </h3>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label>表示期間</Label>
-                                    <div className="flex flex-col gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs text-slate-500 w-8">開始</span>
-                                            <Input
-                                                type="datetime-local"
-                                                value={formDisplayStart}
-                                                onChange={(e) => setFormDisplayStart(e.target.value)}
-                                                className="flex-1"
-                                            />
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs text-slate-500 w-8">終了</span>
-                                            <Input
-                                                type="datetime-local"
-                                                value={formDisplayEnd}
-                                                onChange={(e) => setFormDisplayEnd(e.target.value)}
-                                                className="flex-1"
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="text-xs text-slate-500">
-                                        指定期間のみ表示されます。空欄の場合は無期限となります。
-                                    </p>
-                                </div>
+                            <label className="flex items-start gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={formIsDefault}
+                                    onChange={(e) => setFormIsDefault(e.target.checked)}
+                                    className="mt-0.5 w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                />
+                                <span className="text-sm">
+                                    全員に使う（基本のメニュー）
+                                    <span className="block text-xs text-slate-500">
+                                        タグ別の設定がない人全員に表示します。基本のメニューは1つだけで、ほかのメニューからは外れます。
+                                    </span>
+                                </span>
+                            </label>
 
-                                <div className="space-y-2">
-                                    <Label>対象タグ</Label>
-                                    <select
-                                        value={formTargetTagId}
-                                        onChange={(e) => setFormTargetTagId(e.target.value)}
-                                        className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-900"
-                                    >
-                                        <option value="">指定なし</option>
-                                        {tags.map(tag => (
-                                            <option key={tag.id} value={tag.id}>
-                                                {tag.name} (優先度: {tag.priority})
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <p className="text-xs text-slate-500">
-                                        このタグが付いているユーザーに自動的に表示されます。
-                                        <br />
-                                        ※タグの優先度が高い順に適用されます。
-                                    </p>
+                            <div className="space-y-2">
+                                <span className="text-sm">このタグが付いている人に使う</span>
+                                {tags.length === 0 ? (
+                                    <p className="text-xs text-slate-500">タグがまだありません（タグ管理で作成できます）。</p>
+                                ) : (
+                                    <div className="flex flex-wrap gap-2">
+                                        {tags.map(tag => {
+                                            const selected = formTagIds.includes(tag.id)
+                                            const otherMenu = tag.linked_rich_menu_id && tag.linked_rich_menu_id !== editingMenu?.id
+                                                ? richMenus.find(m => m.id === tag.linked_rich_menu_id)
+                                                : null
+                                            return (
+                                                <button
+                                                    key={tag.id}
+                                                    type="button"
+                                                    onClick={() => setFormTagIds(prev =>
+                                                        selected ? prev.filter(id => id !== tag.id) : [...prev, tag.id]
+                                                    )}
+                                                    className={cn(
+                                                        "flex items-center gap-1.5 px-3 py-1.5 rounded-full border-2 text-sm transition-all",
+                                                        selected
+                                                            ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20"
+                                                            : "border-slate-200 bg-white hover:border-slate-300 dark:bg-slate-900 dark:border-slate-700"
+                                                    )}
+                                                    title={otherMenu ? `今は「${otherMenu.name}」を表示中。選ぶとこのメニューに切り替わります` : undefined}
+                                                >
+                                                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                                                    {tag.name}
+                                                    {otherMenu && !selected && (
+                                                        <span className="text-[11px] text-slate-400">（今:{otherMenu.name}）</span>
+                                                    )}
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                                <p className="text-xs text-slate-500">
+                                    タグ別のメニューは全員向けより優先されます。複数のタグが付いている人には、優先度が高いタグのメニューが表示されます。
+                                </p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4" />
+                                    表示期間（任意）
+                                </Label>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 w-8">開始</span>
+                                        <Input
+                                            type="datetime-local"
+                                            value={formDisplayStart}
+                                            onChange={(e) => setFormDisplayStart(e.target.value)}
+                                            className="flex-1"
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 w-8">終了</span>
+                                        <Input
+                                            type="datetime-local"
+                                            value={formDisplayEnd}
+                                            onChange={(e) => setFormDisplayEnd(e.target.value)}
+                                            className="flex-1"
+                                        />
+                                    </div>
                                 </div>
+                                <p className="text-xs text-slate-500">
+                                    開始と終了を両方入れると、その期間だけ全員向けにこのメニューを表示し、終わると基本のメニューに自動で戻ります（タグ別の人はタグのメニューのまま）。
+                                </p>
                             </div>
                         </div>
 
@@ -1109,10 +1200,9 @@ export default function RichMenusPage() {
                             <Button variant="outline" onClick={resetForm}>
                                 キャンセル
                             </Button>
-                            <Button onClick={handleSave} disabled={saving || !formName.trim()}>
-                                {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-                                <Save className="w-4 h-4" />
-                                保存
+                            <Button onClick={handleSave} disabled={saving || applying || !formName.trim()}>
+                                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                保存してLINEに反映
                             </Button>
                         </div>
                     </CardContent>
@@ -1120,93 +1210,146 @@ export default function RichMenusPage() {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {richMenus.map(menu => (
-                    <Card key={menu.id} className="overflow-hidden hover:shadow-lg transition-all duration-200">
-                        <div className="aspect-[2500/1686] max-h-48 bg-slate-100 dark:bg-slate-800 relative">
-                            {menu.image_url ? (
-                                <img
-                                    src={menu.image_url}
-                                    alt={menu.name}
-                                    className="w-full h-full object-contain"
-                                />
-                            ) : (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                    <ImageIcon className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-                                </div>
-                            )}
-                            {menu.is_default && (
-                                <div className="absolute top-2 left-2 px-2 py-1 bg-emerald-500 text-white text-xs font-medium rounded-full flex items-center gap-1">
-                                    <Star className="w-3 h-3" />
-                                    デフォルト
-                                </div>
-                            )}
-                            {menu.rich_menu_id && (
-                                <div className="absolute top-2 right-2 px-2 py-1 bg-blue-500 text-white text-xs font-medium rounded-full flex items-center gap-1">
-                                    <Cloud className="w-3 h-3" />
-                                    LINE登録済み
-                                </div>
-                            )}
-                        </div>
-                        <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-3">
-                                <div>
-                                    <h3 className="font-medium">{menu.name}</h3>
-                                    <p className="text-xs text-slate-500">
-                                        {(menu.areas || []).length}個のタップ領域
-                                    </p>
-                                </div>
-                                <div className="flex gap-1">
-                                    {!menu.is_default && (
-                                        <button
-                                            onClick={() => handleSetDefault(menu.id)}
-                                            className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-colors"
-                                            title="デフォルトに設定"
-                                        >
-                                            <StarOff className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => startEditing(menu)}
-                                        className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                                    >
-                                        <Edit2 className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => handleDelete(menu.id)}
-                                        className="p-2 hover:bg-red-50 text-red-500 rounded-lg transition-colors"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            </div>
+                {richMenus.map(menu => {
+                    const linkedTags = tags.filter(t => t.linked_rich_menu_id === menu.id)
+                    const isShowingToAll = allUsersMenu?.id === menu.id
+                    const hasPeriod = Boolean(menu.display_period_start && menu.display_period_end)
+                    const inUse = isShowingToAll || menu.is_default || linkedTags.length > 0 || hasPeriod
+                    const assignableTags = tags.filter(t => t.linked_rich_menu_id !== menu.id)
 
-                            <div className="flex gap-2">
-                                {menu.rich_menu_id ? (
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="flex-1"
-                                        onClick={() => handleUnregisterFromLine(menu.id)}
-                                        disabled={registering === menu.id}
-                                    >
-                                        <CloudOff className="w-4 h-4 mr-2" />
-                                        LINE API解除
-                                    </Button>
+                    return (
+                        <Card key={menu.id} className="overflow-hidden hover:shadow-lg transition-all duration-200">
+                            <div className="aspect-[2500/1686] max-h-48 bg-slate-100 dark:bg-slate-800 relative">
+                                {menu.image_url ? (
+                                    <img
+                                        src={menu.image_url}
+                                        alt={menu.name}
+                                        className="w-full h-full object-contain"
+                                    />
                                 ) : (
-                                    <Button
-                                        size="sm"
-                                        className="flex-1"
-                                        onClick={() => handleRegisterToLine(menu.id)}
-                                        disabled={registering === menu.id || !menu.image_url}
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <ImageIcon className="w-12 h-12 text-slate-300 dark:text-slate-600" />
+                                    </div>
+                                )}
+                                {menu.rich_menu_id && (
+                                    <div
+                                        className="absolute top-2 right-2 px-2 py-1 bg-blue-500/90 text-white text-[11px] font-medium rounded-full flex items-center gap-1"
+                                        title="LINEに反映済みです。編集して保存すると自動で作り直されます"
                                     >
-                                        <Cloud className="w-4 h-4 mr-2" />
-                                        LINE API登録
-                                    </Button>
+                                        <Cloud className="w-3 h-3" />
+                                        LINE反映済み
+                                    </div>
                                 )}
                             </div>
-                        </CardContent>
-                    </Card>
-                ))}
+                            <CardContent className="p-4 space-y-3">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <h3 className="font-medium truncate">{menu.name}</h3>
+                                        <p className="text-xs text-slate-500">
+                                            {(menu.areas || []).length}個のタップ領域
+                                        </p>
+                                    </div>
+                                    <div className="flex gap-1 shrink-0">
+                                        <button
+                                            onClick={() => startEditing(menu)}
+                                            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                                            title="編集"
+                                        >
+                                            <Edit2 className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleDelete(menu)}
+                                            disabled={applying}
+                                            className="p-2 hover:bg-red-50 text-red-500 rounded-lg transition-colors disabled:opacity-50"
+                                            title="削除"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* 今だれに表示しているか */}
+                                <div className="flex flex-wrap gap-1.5">
+                                    {isShowingToAll && (
+                                        <span className="px-2 py-0.5 bg-emerald-500 text-white text-xs font-medium rounded-full flex items-center gap-1">
+                                            <Users className="w-3 h-3" />
+                                            全員に表示中
+                                        </span>
+                                    )}
+                                    {menu.is_default && !isShowingToAll && (
+                                        <span className="px-2 py-0.5 border border-emerald-500 text-emerald-700 dark:text-emerald-400 text-xs font-medium rounded-full flex items-center gap-1">
+                                            <Star className="w-3 h-3" />
+                                            基本のメニュー（期間メニューの表示中は控え）
+                                        </span>
+                                    )}
+                                    {hasPeriod && (
+                                        <span className="px-2 py-0.5 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-xs font-medium rounded-full flex items-center gap-1">
+                                            <CalendarClock className="w-3 h-3" />
+                                            {formatMenuDate(menu.display_period_start)}〜{formatMenuDate(menu.display_period_end)}
+                                        </span>
+                                    )}
+                                    {linkedTags.map(tag => (
+                                        <span
+                                            key={tag.id}
+                                            className="px-2 py-0.5 text-xs font-medium rounded-full flex items-center gap-1 border"
+                                            style={{ borderColor: tag.color, color: tag.color }}
+                                        >
+                                            <TagIcon className="w-3 h-3" />
+                                            {tag.name}
+                                        </span>
+                                    ))}
+                                    {!inUse && (
+                                        <span className="px-2 py-0.5 bg-slate-100 text-slate-500 dark:bg-slate-800 text-xs rounded-full">
+                                            未使用
+                                        </span>
+                                    )}
+                                </div>
+
+                                {/* ワンタッチ操作 */}
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                    {menu.is_default ? (
+                                        <Button size="sm" variant="outline" className="flex-1" disabled>
+                                            <Star className="w-4 h-4" />
+                                            全員向けに設定中
+                                        </Button>
+                                    ) : (
+                                        <Button
+                                            size="sm"
+                                            className="flex-1"
+                                            onClick={() => handleSetDefault(menu.id)}
+                                            disabled={applying || !menu.image_url}
+                                        >
+                                            {applying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+                                            全員にこれを使う
+                                        </Button>
+                                    )}
+                                    {assignableTags.length > 0 && (
+                                        <select
+                                            value=""
+                                            onChange={(e) => {
+                                                if (e.target.value) handleSetTagMenu(e.target.value, menu.id)
+                                            }}
+                                            disabled={applying || !menu.image_url}
+                                            className="flex-1 h-9 px-3 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900"
+                                        >
+                                            <option value="">＋ タグの人に使う…</option>
+                                            {assignableTags.map(tag => {
+                                                const current = tag.linked_rich_menu_id
+                                                    ? richMenus.find(m => m.id === tag.linked_rich_menu_id)
+                                                    : null
+                                                return (
+                                                    <option key={tag.id} value={tag.id}>
+                                                        {tag.name}{current ? `（今:${current.name}）` : ''}
+                                                    </option>
+                                                )
+                                            })}
+                                        </select>
+                                    )}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )
+                })}
             </div>
 
             {richMenus.length === 0 && !isCreating && (

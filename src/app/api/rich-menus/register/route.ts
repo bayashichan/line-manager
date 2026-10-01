@@ -1,191 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/server'
+import { getSessionUser, isChannelMember } from '@/lib/auth/channel-access'
 import { LineClient } from '@/lib/line'
-import { fitAreasToSize, normalizeRichMenuAreas } from '@/lib/rich-menu/areas'
-import {
-    RICH_MENU_MAX_IMAGE_BYTES,
-    detectImageMimeType,
-    isAllowedRichMenuSize,
-    readImageSize,
-} from '@/lib/rich-menu/image-size'
-import type { RichMenuArea } from '@/types'
+import { hasUpcomingDisplayPeriod } from '@/lib/rich-menu/plan'
+import { syncChannelRichMenus } from '@/lib/rich-menu/sync'
+
+export const dynamic = 'force-dynamic'
+export const maxDuration = 60
+
+async function loadMenuForMember(richMenuId: string) {
+    const user = await getSessionUser()
+    if (!user) {
+        return { error: NextResponse.json({ error: '認証が必要です' }, { status: 401 }) }
+    }
+
+    const admin = createAdminClient()
+    const { data: richMenu } = await admin
+        .from('rich_menus')
+        .select('id, channel_id, name, rich_menu_id, is_default, display_period_start, display_period_end')
+        .eq('id', richMenuId)
+        .maybeSingle()
+
+    if (!richMenu || !(await isChannelMember(user.id, richMenu.channel_id))) {
+        return { error: NextResponse.json({ error: 'リッチメニューが見つかりません' }, { status: 404 }) }
+    }
+
+    return { admin, richMenu }
+}
 
 /**
- * リッチメニューをLINE APIに登録
+ * リッチメニューをLINE APIに登録（登録済みなら今の内容で作り直す）
  * POST /api/rich-menus/register
- * 
+ *
  * リクエストボディ:
  * - richMenuId: DBのリッチメニューID
+ *
+ * 使用中のメニューなら、表示中の人へのリンクやデフォルト設定も新しい版に付け替える。
+ * 通常は /api/rich-menus/apply（保存時・設定変更時に自動で反映）を使う。
  */
 export async function POST(request: NextRequest) {
+    const { richMenuId } = await request.json().catch(() => ({}))
+
+    if (!richMenuId) {
+        return NextResponse.json({ error: 'richMenuId が必要です' }, { status: 400 })
+    }
+
+    const loaded = await loadMenuForMember(richMenuId)
+    if ('error' in loaded) return loaded.error
+
     try {
-        const supabase = await createClient()
-        const { data: { user } } = await supabase.auth.getUser()
+        const result = await syncChannelRichMenus(loaded.richMenu.channel_id, { publishMenuIds: [richMenuId] })
 
-        if (!user) {
-            return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
+        const failed = result.failedMenus.find(m => m.id === richMenuId)
+        if (failed) {
+            return NextResponse.json({ error: failed.message }, { status: 400 })
         }
 
-        const { richMenuId } = await request.json()
-
-        if (!richMenuId) {
-            return NextResponse.json({ error: 'richMenuId が必要です' }, { status: 400 })
-        }
-
-        // リッチメニュー情報取得
-        const adminClient = createAdminClient()
-        const { data: richMenu, error: menuError } = await adminClient
+        const published = result.published.find(m => m.id === richMenuId)
+        const { data: latest } = await loaded.admin
             .from('rich_menus')
-            .select(`
-        *,
-        channels!rich_menus_channel_id_fkey (*)
-      `)
+            .select('rich_menu_id')
             .eq('id', richMenuId)
             .single()
 
-        if (menuError || !richMenu) {
-            console.error('RichMenu fetch error:', menuError, 'ID:', richMenuId)
-            return NextResponse.json({
-                error: 'リッチメニューが見つかりません',
-                details: {
-                    id: richMenuId,
-                    dbError: menuError
-                }
-            }, { status: 404 })
-        }
-
-        if (!richMenu.image_url) {
-            return NextResponse.json({ error: '画像が設定されていません' }, { status: 400 })
-        }
-
-        const channel = richMenu.channels as any
-        const lineClient = new LineClient(channel.channel_access_token)
-
-        // タップ領域を正規化（アクション未入力のエリアは除外）
-        // LINEは text/uri が空文字のアクションを受け付けず
-        // `must be non-empty text` エラーになるため、ここで落とす
-        const savedAreas = (richMenu.areas || []) as RichMenuArea[]
-        const { areas: normalizedAreas, skippedAreaNumbers } = normalizeRichMenuAreas(savedAreas)
-
-        if (savedAreas.length > 0 && normalizedAreas.length === 0) {
-            return NextResponse.json({
-                error: 'タップ領域のアクションが未入力です。各エリアにメッセージ本文またはURLを入力し、保存してから登録してください。',
-            }, { status: 400 })
-        }
-
-        // 1. 画像をダウンロード（サイズ判定にも使うため作成前に取得する）
-        const imageResponse = await fetch(richMenu.image_url)
-
-        if (!imageResponse.ok) {
-            return NextResponse.json({ error: '画像の取得に失敗しました' }, { status: 400 })
-        }
-
-        const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
-
-        // Content-Type ヘッダーは信用せず、中身のマジックナンバーでフォーマットを判定する。
-        // ヘッダー（例: image/png）と中身（例: JPEG）が食い違ったままLINEに渡すと、
-        // iOSは中身を見て描画するがAndroidは宣言どおりデコードしようとして失敗し、
-        // リッチメニューが「読み込み中」のまま表示されなくなる。
-        const contentType = detectImageMimeType(imageBuffer)
-
-        if (!contentType) {
-            return NextResponse.json({
-                error: '画像がJPEG / PNGではありません。JPEGまたはPNGの画像を選び直して保存してから登録してください。',
-            }, { status: 400 })
-        }
-
-        if (imageBuffer.byteLength > RICH_MENU_MAX_IMAGE_BYTES) {
-            return NextResponse.json({
-                error: `画像のファイルサイズが${Math.round(imageBuffer.byteLength / 1024)}KBあり、LINEの上限（1MB）を超えています。画像を選び直して保存してください。`,
-            }, { status: 400 })
-        }
-
-        const size = readImageSize(imageBuffer)
-
-        if (!size || !isAllowedRichMenuSize(size)) {
-            return NextResponse.json({
-                error: '画像サイズがLINEの条件（幅800〜2500px・高さ250px以上・幅÷高さが1.45以上）を満たしていません。画像を選び直して保存してください。',
-            }, { status: 400 })
-        }
-
-        // エリアが設定されていない場合はメニュー全体を1エリアとして扱う
-        const richMenuAreas = normalizedAreas.length > 0 ? normalizedAreas : [
-            {
-                bounds: { x: 0, y: 0, width: size.width, height: size.height },
-                action: { type: 'message', text: 'メニュー' },
-            }
-        ]
-
-        // 画像サイズと座標系が食い違っていても登録できるよう、枠内に収まるよう補正する
-        const fittedAreas = fitAreasToSize(richMenuAreas, size)
-
-        const richMenuObject = {
-            size,
-            selected: true,
-            name: richMenu.name,
-            chatBarText: 'メニュー',
-            areas: fittedAreas,
-        }
-
-        // 2. リッチメニューを作成して画像をアップロード
-        const { richMenuId: lineRichMenuId } = await lineClient.createRichMenu(richMenuObject)
-
-        try {
-            await lineClient.uploadRichMenuImage(
-                lineRichMenuId,
-                new Blob([new Uint8Array(imageBuffer)], { type: contentType }),
-                contentType
-            )
-        } catch (uploadError) {
-            // 画像なしのリッチメニューが残ると端末側で「読み込み中」のままになるため、
-            // アップロードに失敗した枠は作りっぱなしにせず消す
-            await lineClient.deleteRichMenu(lineRichMenuId).catch(() => { })
-            throw uploadError
-        }
-
-        // 3. DBを更新
-        await adminClient
-            .from('rich_menus')
-            .update({ rich_menu_id: lineRichMenuId })
-            .eq('id', richMenuId)
-
-        // 4. デフォルトメニューの場合、全ユーザーに適用
-        if (richMenu.is_default) {
-            await lineClient.setDefaultRichMenu(lineRichMenuId)
-
-            // チャンネルのデフォルトリッチメニューIDを更新
-            await adminClient
-                .from('channels')
-                .update({ default_rich_menu_id: richMenuId })
-                .eq('id', channel.id)
-        }
-
-        // 5. 表示期間が設定されていて、現在が期間内であれば即座に適用
-        const now = new Date()
-        const periodStart = richMenu.display_period_start ? new Date(richMenu.display_period_start) : null
-        const periodEnd = richMenu.display_period_end ? new Date(richMenu.display_period_end) : null
-
-        if (periodStart && periodEnd && now >= periodStart && now <= periodEnd) {
-            try {
-                await lineClient.setDefaultRichMenu(lineRichMenuId)
-
-                // is_active フラグを立てる
-                await adminClient
-                    .from('rich_menus')
-                    .update({ is_active: true })
-                    .eq('id', richMenuId)
-
-                console.log(`表示期間内のため即座に適用: ${richMenu.name}`)
-            } catch (err) {
-                console.error('期間メニュー即時適用エラー:', err)
-                // 適用失敗してもメニュー作成自体は成功なので続行
-            }
-        }
-
         return NextResponse.json({
             success: true,
-            lineRichMenuId,
-            skippedAreaNumbers,
+            lineRichMenuId: latest?.rich_menu_id ?? null,
+            skippedAreaNumbers: published?.skippedAreaNumbers ?? [],
+            warnings: result.warnings,
         })
     } catch (error) {
         console.error('LINE API登録エラー:', error)
@@ -197,54 +79,63 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * LINE APIからリッチメニューを削除
+ * LINE APIからリッチメニューを取り下げる（DBのメニューは残す）
  * DELETE /api/rich-menus/register?richMenuId=xxx
+ *
+ * 使用中（全員向け・タグ連動・表示期間あり）のメニューは、取り下げると表示が消えるため断る。
  */
 export async function DELETE(request: NextRequest) {
+    const richMenuId = request.nextUrl.searchParams.get('richMenuId')
+
+    if (!richMenuId) {
+        return NextResponse.json({ error: 'richMenuId が必要です' }, { status: 400 })
+    }
+
+    const loaded = await loadMenuForMember(richMenuId)
+    if ('error' in loaded) return loaded.error
+    const { admin, richMenu } = loaded
+
+    if (!richMenu.rich_menu_id) {
+        return NextResponse.json({ error: 'LINE APIに登録されていません' }, { status: 400 })
+    }
+
+    const { data: channel } = await admin
+        .from('channels')
+        .select('channel_access_token, default_rich_menu_id')
+        .eq('id', richMenu.channel_id)
+        .single()
+
+    const { count: linkedTagCount } = await admin
+        .from('tags')
+        .select('id', { count: 'exact', head: true })
+        .eq('linked_rich_menu_id', richMenuId)
+
+    const inUse =
+        richMenu.is_default ||
+        channel?.default_rich_menu_id === richMenuId ||
+        (linkedTagCount ?? 0) > 0 ||
+        hasUpcomingDisplayPeriod(richMenu, new Date())
+
+    if (inUse) {
+        return NextResponse.json({
+            error: 'このメニューは使用中です（全員向け・タグ・表示期間のいずれかに設定されています）。先に表示設定から外してください。',
+        }, { status: 409 })
+    }
+
     try {
-        const supabase = await createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-
-        if (!user) {
-            return NextResponse.json({ error: '認証が必要です' }, { status: 401 })
-        }
-
-        const richMenuId = request.nextUrl.searchParams.get('richMenuId')
-
-        if (!richMenuId) {
-            return NextResponse.json({ error: 'richMenuId が必要です' }, { status: 400 })
-        }
-
-        // リッチメニュー情報取得
-        const adminClient = createAdminClient()
-        const { data: richMenu, error: menuError } = await adminClient
-            .from('rich_menus')
-            .select(`
-        *,
-        channels!rich_menus_channel_id_fkey (*)
-      `)
-            .eq('id', richMenuId)
-            .single()
-
-        if (menuError || !richMenu) {
-            return NextResponse.json({ error: 'リッチメニューが見つかりません' }, { status: 404 })
-        }
-
-        if (!richMenu.rich_menu_id) {
-            return NextResponse.json({ error: 'LINE APIに登録されていません' }, { status: 400 })
-        }
-
-        const channel = richMenu.channels as any
-        const lineClient = new LineClient(channel.channel_access_token)
-
-        // LINE APIからリッチメニューを削除
+        const lineClient = new LineClient(channel!.channel_access_token)
+        // LINE から消すと、このメニューを個別に付けていた人のリンクも外れる
         await lineClient.deleteRichMenu(richMenu.rich_menu_id)
 
-        // DBを更新
-        await adminClient
+        await admin
             .from('rich_menus')
             .update({ rich_menu_id: null })
             .eq('id', richMenuId)
+
+        await admin
+            .from('line_users')
+            .update({ current_rich_menu_id: null })
+            .eq('current_rich_menu_id', richMenuId)
 
         return NextResponse.json({ success: true })
     } catch (error) {
