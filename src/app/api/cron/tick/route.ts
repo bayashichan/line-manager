@@ -5,6 +5,7 @@ import { processDueReminderDeliveries } from '@/lib/reminders/service'
 import { processOfferNudges } from '@/lib/booking/service'
 import { syncAllCalendarSlots } from '@/lib/google/sync'
 import { syncScheduledRichMenus } from '@/lib/rich-menu/sync'
+import { processDueScheduledChatMessages } from '@/lib/messaging/scheduled-chat'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -16,6 +17,7 @@ export const maxDuration = 60
  * - Googleカレンダーの空き時間を面談の空き枠に反映（連携している場合）
  * - ステップ配信（/api/cron/step-messages と同じ処理）
  * - リマインダー配信
+ * - 1:1チャットの送信予約（QStash で時刻ちょうどに送れなかったものの取りこぼし防止）
  * - 面談の日程の催促
  * - リッチメニューの表示期間による切り替え（全員向けメニューの付け替え）
  *
@@ -35,6 +37,7 @@ async function handler(request: NextRequest) {
         ['calendar', () => syncAllCalendarSlots(supabase)],
         ['steps', () => deliverDueStepMessages()],
         ['reminders', () => processDueReminderDeliveries(supabase)],
+        ['chatSchedules', () => processDueScheduledChatMessages(supabase)],
         ['nudges', () => processOfferNudges(supabase)],
         ['richMenus', () => syncScheduledRichMenus(supabase)],
     ]

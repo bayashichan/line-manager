@@ -56,6 +56,15 @@ AIが作ったステップ配信はオフ（下書き）で保存される。
 Googleカレンダーと連携すると、空き時間から枠を自動で作り、確定時に予定と Google Meet の URL を作成する（任意。`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` が必要）。
 使い方は [docs/booking-and-reminders.md](docs/booking-and-reminders.md)。
 
+### 1:1チャットの送信予約
+チャット画面の時計ボタンを押すと、書いたメッセージ（テキスト・画像・動画）を指定した日時（日本時間）に送れる。
+予約はトークの一番下に点線の吹き出しで表示され、送るまでは「取り消す」で止められる。
+友だち一覧には予約がある人に時計マーク、送れなかった予約（ブロックされていた等）がある人に赤いマークが付く。
+
+- 予約時に QStash（`QSTASH_TOKEN`）へジョブを登録し、時刻ちょうどに `/api/webhook/qstash-chat` から送る
+- QStash が使えない・届かなかったときは定期処理（`/api/cron/tick`、5分ごと）が送る。どちらから呼ばれても送るのは1回だけ
+- `supabase/migrations/20261004000000_add_scheduled_chat_messages.sql` の適用が必要
+
 ## セットアップ
 
 ### 1. 環境変数の設定

@@ -1,18 +1,21 @@
 'use client'
 
-import { useState, useEffect, useRef, Suspense } from 'react'
+import { useState, useEffect, useRef, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
 import { getCookie } from '@/lib/utils'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Send, Loader2, Image as ImageIcon, Smile, ArrowLeft } from 'lucide-react'
+import { Send, Loader2, Image as ImageIcon, Smile, ArrowLeft, Clock, X, AlertCircle } from 'lucide-react'
 import EmojiPicker from 'emoji-picker-react'
 import imageCompression from 'browser-image-compression'
 import { uploadToR2 as uploadFileToR2 } from '@/lib/storage/upload-client'
+import { formatJstDateTime, formatJstShort } from '@/lib/reminders/timing'
+import type { MessageContent, ScheduledChatMessage } from '@/types'
 
 // 型定義
 interface ChatUser {
@@ -33,6 +36,21 @@ interface ChatMessage {
     content: any
     created_at: string
     read_at: string | null
+}
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000
+
+/** 日本時間の日付（YYYY-MM-DD）と時刻（HH:MM）。予約日時の入力欄に使う */
+function toJstInputs(date: Date): { date: string; time: string } {
+    const iso = new Date(date.getTime() + JST_OFFSET_MS).toISOString()
+    return { date: iso.slice(0, 10), time: iso.slice(11, 16) }
+}
+
+/** 予約日時の入力欄（日本時間）を実際の時刻にする。未入力・不正なら null */
+function fromJstInputs(date: string, time: string): Date | null {
+    if (!date || !time) return null
+    const d = new Date(`${date}T${time}:00+09:00`)
+    return isNaN(d.getTime()) ? null : d
 }
 
 export default function ChatsPageWrapper() {
@@ -57,6 +75,13 @@ function ChatsPage() {
     const supabase = createClient()
     const messagesViewportRef = useRef<HTMLDivElement>(null)
     const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
+
+    // 送信予約（チャンネル全体の「予約中・送信中・送れなかった」予約。トーク画面と一覧の時計マークに使う）
+    const [scheduledMessages, setScheduledMessages] = useState<ScheduledChatMessage[]>([])
+    const [isScheduleMode, setIsScheduleMode] = useState(false)
+    const [scheduleDate, setScheduleDate] = useState('')
+    const [scheduleTime, setScheduleTime] = useState('')
+    const [cancellingScheduleId, setCancellingScheduleId] = useState<string | null>(null)
 
     // 表示名取得ヘルパー (管理用ネームを優先、なければLINE名)
     const getDisplayName = (user: ChatUser) => {
@@ -92,6 +117,7 @@ function ChatsPage() {
             if (member) {
                 setChannelId(member.channel_id)
                 fetchUsers(member.channel_id)
+                fetchScheduledMessages(member.channel_id)
             }
         }
         loadInitialData()
@@ -110,6 +136,37 @@ function ChatsPage() {
         if (data) setUsers(data as any)
         setIsLoadingUsers(false)
     }
+
+    // 送信予約の取得（送信済み・取り消し済みは出さない）
+    async function fetchScheduledMessages(cId: string) {
+        const { data } = await supabase
+            .from('scheduled_chat_messages')
+            .select('*')
+            .eq('channel_id', cId)
+            .in('status', ['pending', 'sending', 'failed'])
+            .order('send_at', { ascending: true })
+
+        if (data) setScheduledMessages(data as ScheduledChatMessage[])
+    }
+
+    // 予約の送信（別の画面を開いている友だちの分も含む）を一覧に反映するため、定期的に取り直す
+    useEffect(() => {
+        if (!channelId) return
+        const timer = setInterval(() => fetchScheduledMessages(channelId), 60 * 1000)
+        return () => clearInterval(timer)
+    }, [channelId])
+
+    // 友だちごとの予約の有無（一覧の時計マーク・失敗マーク）
+    const scheduleSummary = useMemo(() => {
+        const summary = new Map<string, { pending: boolean; failed: boolean }>()
+        for (const item of scheduledMessages) {
+            const entry = summary.get(item.line_user_id) ?? { pending: false, failed: false }
+            if (item.status === 'failed') entry.failed = true
+            else entry.pending = true
+            summary.set(item.line_user_id, entry)
+        }
+        return summary
+    }, [scheduledMessages])
 
     // URLパラメータによる自動選択
     useEffect(() => {
@@ -186,6 +243,9 @@ function ChatsPage() {
                     // 自分が受信者なら既読処理（本来はフォーカス判定なども必要）
                     if (newMsg.sender === 'user') {
                         markAsRead(selectedUser.id)
+                    } else {
+                        // 予約したメッセージが送られたら、予約の表示を消す
+                        fetchScheduledMessages(channelId)
                     }
                     scrollToBottom()
                 }
@@ -331,6 +391,14 @@ function ChatsPage() {
         e.preventDefault()
         if ((!newMessage.trim() && !selectedFile) || !selectedUser || !channelId || isSending) return
 
+        // 予約のときは、ファイルをアップロードする前に日時を確かめる
+        let sendAt: Date | null = null
+        if (isScheduleMode) {
+            sendAt = fromJstInputs(scheduleDate, scheduleTime)
+            if (!sendAt) return setUploadError('送信する日時を入力してください')
+            if (sendAt.getTime() <= Date.now()) return setUploadError('過去の日時は指定できません')
+        }
+
         setIsSending(true)
         setUploadError(null)
 
@@ -392,7 +460,23 @@ function ChatsPage() {
                 }
             }
 
-            // 2. API送信
+            // 2-a. 送信予約（テキスト → ファイルの順で、指定した日時にまとめて送る）
+            if (sendAt) {
+                const blocks: MessageContent[] = []
+                if (newMessage.trim()) blocks.push({ type: 'text', text: newMessage })
+                if (uploadedContent) blocks.push(uploadedContent)
+                await scheduleMessageToApi(blocks, sendAt)
+
+                setNewMessage('')
+                clearFileSelection()
+                // 次のメッセージをうっかり予約しないよう、すぐ送るモードに戻す
+                setIsScheduleMode(false)
+                await fetchScheduledMessages(channelId)
+                scrollToBottom()
+                return
+            }
+
+            // 2-b. API送信
             // ファイルがある場合はファイルを優先的に送信（テキストとの同時送信は今回は未対応、別々に送るならループなど必要）
             // ここでは「テキストがあればテキスト送信」->「ファイルがあればファイル送信」の順で行う
 
@@ -450,6 +534,63 @@ function ChatsPage() {
         }
     }
 
+    const scheduleMessageToApi = async (blocks: MessageContent[], sendAt: Date) => {
+        if (!selectedUser || !channelId) return
+
+        const res = await fetch('/api/chat/schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                channelId,
+                lineUserId: selectedUser.id,
+                sendAt: sendAt.toISOString(),
+                messages: blocks,
+            }),
+        })
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}))
+            throw new Error(errData.error || '予約に失敗しました')
+        }
+    }
+
+    // 予約モードの切り替え（初めて開くときは「次の正時」を入れておく）
+    const toggleScheduleMode = () => {
+        if (!isScheduleMode) {
+            const current = fromJstInputs(scheduleDate, scheduleTime)
+            if (!current || current.getTime() <= Date.now()) {
+                const nextHour = new Date(Date.now() + 60 * 60 * 1000)
+                nextHour.setUTCMinutes(0, 0, 0) // 日本時間との差は9時間ちょうどなので、正時のまま
+                const { date, time } = toJstInputs(nextHour)
+                setScheduleDate(date)
+                setScheduleTime(time)
+            }
+        }
+        setUploadError(null)
+        setIsScheduleMode(!isScheduleMode)
+    }
+
+    // 予約の取り消し（送れなかった予約は「閉じる」で一覧から消す）
+    const cancelScheduledMessage = async (item: ScheduledChatMessage) => {
+        const isFailed = item.status === 'failed'
+        if (!isFailed && !confirm(`${formatJstDateTime(new Date(item.send_at))} に送る予約を取り消しますか？`)) return
+        if (!channelId) return
+
+        setCancellingScheduleId(item.id)
+        try {
+            const res = await fetch('/api/chat/schedule/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: item.id }),
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) alert(data.error || '取り消しに失敗しました')
+            await fetchScheduledMessages(channelId)
+        } finally {
+            setCancellingScheduleId(null)
+        }
+    }
+
     // 日付フォーマット
     const formatDate = (dateStr: string) => {
         const d = new Date(dateStr)
@@ -464,7 +605,9 @@ function ChatsPage() {
                 <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900">
                     <h2 className="font-bold text-lg text-slate-800 dark:text-slate-100">チャット</h2>
                 </div>
-                <ScrollArea className="flex-1">
+                {/* Radix の ScrollArea は中身を display: table で包み、長い行に合わせて一覧ごと横に広がる
+                    （右端の日付・未読数が切れる）ため、block にして各行の省略表示（truncate）を効かせる */}
+                <ScrollArea className="flex-1" viewportClassName="[&>div]:!block">
                     {isLoadingUsers ? (
                         <div className="flex justify-center p-4"><Loader2 className="animate-spin text-slate-400" /></div>
                     ) : users.length === 0 ? (
@@ -494,9 +637,18 @@ function ChatsPage() {
                                             )}
                                         </div>
                                         <div className="flex justify-between items-center">
-                                            <p className="text-xs text-slate-500 truncate h-4">
+                                            <p className="text-xs text-slate-500 truncate h-4 min-w-0 flex-1">
                                                 {user.last_message_content || ''}
                                             </p>
+                                            {scheduleSummary.get(user.id)?.failed ? (
+                                                <span title="送れなかった予約があります" className="shrink-0 ml-1">
+                                                    <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                                                </span>
+                                            ) : scheduleSummary.get(user.id)?.pending ? (
+                                                <span title="送信予約があります" className="shrink-0 ml-1">
+                                                    <Clock className="w-3.5 h-3.5 text-blue-500" />
+                                                </span>
+                                            ) : null}
                                             {user.unread_count > 0 && (
                                                 <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.2rem] text-center">
                                                     {user.unread_count}
@@ -589,6 +741,61 @@ function ChatsPage() {
                                         </div>
                                     )
                                 })}
+
+                                {/* 送信予約（まだ送っていないもの・送れなかったもの） */}
+                                {scheduledMessages
+                                    .filter((item) => item.line_user_id === selectedUser.id)
+                                    .map((item) => {
+                                        const isFailed = item.status === 'failed'
+                                        const isCancelling = cancellingScheduleId === item.id
+                                        return (
+                                            <div key={`scheduled-${item.id}`} className="flex justify-end">
+                                                <div className="max-w-[70%] items-end flex flex-col">
+                                                    <div
+                                                        className={`px-4 py-2 rounded-2xl rounded-tr-none text-sm whitespace-pre-wrap break-words border-2 border-dashed flex flex-col gap-2 ${isFailed
+                                                            ? 'border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-100'
+                                                            : 'border-blue-300 bg-blue-50 text-slate-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-slate-100'
+                                                            }`}
+                                                    >
+                                                        {item.content.map((block, i) =>
+                                                            block.type === 'text' ? (
+                                                                <span key={i}>{block.text}</span>
+                                                            ) : block.type === 'image' ? (
+                                                                // eslint-disable-next-line @next/next/no-img-element
+                                                                <img key={i} src={block.previewImageUrl || block.originalContentUrl} alt="予約した画像" className="max-w-[12rem] rounded-lg" />
+                                                            ) : block.type === 'video' ? (
+                                                                <video key={i} src={block.originalContentUrl} poster={block.previewImageUrl} controls className="max-w-[12rem] rounded-lg" />
+                                                            ) : null
+                                                        )}
+                                                    </div>
+                                                    <p className={`text-[11px] mt-1 px-1 text-right ${isFailed ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}`}>
+                                                        {isFailed ? (
+                                                            <>
+                                                                <AlertCircle className="inline w-3 h-3 mr-1 -mt-0.5" />
+                                                                {formatJstShort(new Date(item.send_at))} の予約を送れませんでした
+                                                                {item.error_message ? `（${item.error_message}）` : ''}
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Clock className="inline w-3 h-3 mr-1 -mt-0.5" />
+                                                                {item.status === 'sending' ? '送信中…' : `${formatJstShort(new Date(item.send_at))} に送信予定`}
+                                                            </>
+                                                        )}
+                                                        {item.status !== 'sending' && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => cancelScheduledMessage(item)}
+                                                                disabled={isCancelling}
+                                                                className="ml-2 whitespace-nowrap underline underline-offset-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 disabled:opacity-50"
+                                                            >
+                                                                {isCancelling ? '処理中…' : isFailed ? '閉じる' : '取り消す'}
+                                                            </button>
+                                                        )}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
                             </div>
                         </ScrollArea>
 
@@ -621,6 +828,58 @@ function ChatsPage() {
                             {uploadError && (
                                 <div className="mb-2 p-2 bg-red-100 text-red-600 text-sm rounded border border-red-200">
                                     {uploadError}
+                                </div>
+                            )}
+
+                            {/* 送信予約の日時（日本時間） */}
+                            {isScheduleMode && (
+                                <div className="mb-2 p-2 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-lg flex flex-col gap-1.5">
+                                    {/* スマホ: 1行目「送信予約 … やめる」・2行目に日時 / PC: 1行に並べる */}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="order-1 flex items-center gap-1 text-sm font-medium text-blue-700 dark:text-blue-300">
+                                            <Clock className="w-4 h-4" />
+                                            送信予約
+                                        </span>
+                                        <div className="order-3 w-full sm:order-2 sm:w-auto flex gap-2">
+                                            <Input
+                                                type="date"
+                                                value={scheduleDate}
+                                                min={toJstInputs(new Date()).date}
+                                                onChange={(e) => setScheduleDate(e.target.value)}
+                                                disabled={isSending}
+                                                className="h-9 flex-1 sm:flex-none sm:w-auto bg-white dark:bg-slate-900"
+                                                aria-label="送信する日付"
+                                            />
+                                            <Input
+                                                type="time"
+                                                value={scheduleTime}
+                                                onChange={(e) => setScheduleTime(e.target.value)}
+                                                disabled={isSending}
+                                                className="h-9 flex-1 sm:flex-none sm:w-auto bg-white dark:bg-slate-900"
+                                                aria-label="送信する時刻"
+                                            />
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={toggleScheduleMode}
+                                            disabled={isSending}
+                                            className="order-2 sm:order-3 ml-auto h-8 px-2 text-slate-500"
+                                            title="予約をやめて、すぐ送るに戻す"
+                                        >
+                                            <X className="w-4 h-4 mr-1" />
+                                            やめる
+                                        </Button>
+                                    </div>
+                                    <p className="text-xs text-slate-600 dark:text-slate-300 px-1">
+                                        {(() => {
+                                            const at = fromJstInputs(scheduleDate, scheduleTime)
+                                            if (!at) return '日付と時刻を入力してください'
+                                            if (at.getTime() <= Date.now()) return '過去の日時は指定できません'
+                                            return `${formatJstDateTime(at)} に送信します（日本時間）`
+                                        })()}
+                                    </p>
                                 </div>
                             )}
 
@@ -660,6 +919,19 @@ function ChatsPage() {
                                 >
                                     <Smile className="w-5 h-5" />
                                 </Button>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    title="日時を指定して送る（送信予約）"
+                                    aria-label="送信予約"
+                                    aria-pressed={isScheduleMode}
+                                    className={`hover:text-blue-600 dark:hover:text-blue-400 ${isScheduleMode ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400'}`}
+                                    disabled={isSending}
+                                    onClick={toggleScheduleMode}
+                                >
+                                    <Clock className="w-5 h-5" />
+                                </Button>
 
                                 <div className="flex-1 relative">
                                     <Textarea
@@ -667,7 +939,11 @@ function ChatsPage() {
                                         onChange={(e) => setNewMessage(e.target.value)}
                                         onFocus={() => setIsInputFocused(true)}
                                         onBlur={() => setIsInputFocused(false)}
-                                        placeholder={selectedFile ? "メッセージを追加（任意）..." : "メッセージを入力... (Enter=改行, Cmd+Enter=送信)"}
+                                        placeholder={
+                                            selectedFile ? "メッセージを追加（任意）..."
+                                                : isScheduleMode ? "予約するメッセージを入力... (Enter=改行, Cmd+Enter=予約)"
+                                                    : "メッセージを入力... (Enter=改行, Cmd+Enter=送信)"
+                                        }
                                         className={`resize-none py-3 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 transition-all duration-300 ease-in-out ${isInputFocused ? 'min-h-[160px]' : 'min-h-[44px]'
                                             }`}
                                         style={{ maxHeight: '400px' }}
@@ -680,8 +956,23 @@ function ChatsPage() {
                                         }}
                                     />
                                 </div>
-                                <Button type="submit" disabled={isSending || (!newMessage.trim() && !selectedFile)} className="bg-blue-600 hover:bg-blue-700 text-white self-end mb-1">
-                                    {isSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                <Button
+                                    type="submit"
+                                    disabled={isSending || (!newMessage.trim() && !selectedFile)}
+                                    className="bg-blue-600 hover:bg-blue-700 text-white self-end mb-1"
+                                    aria-label={isScheduleMode ? '予約する' : '送信'}
+                                >
+                                    {isSending ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : isScheduleMode ? (
+                                        <>
+                                            <Clock className="w-4 h-4 sm:mr-1" />
+                                            {/* スマホでは入力欄を狭めないよう、アイコンだけにする */}
+                                            <span className="hidden sm:inline">予約</span>
+                                        </>
+                                    ) : (
+                                        <Send className="w-4 h-4" />
+                                    )}
                                 </Button>
                             </form>
                         </div>

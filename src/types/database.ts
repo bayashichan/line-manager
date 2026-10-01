@@ -386,6 +386,24 @@ export interface ReminderDelivery {
 }
 
 // =============================================================================
+// 1:1チャットの送信予約
+// =============================================================================
+
+export interface ScheduledChatMessage {
+    id: string
+    channel_id: string
+    line_user_id: string
+    /** 送る内容（LINE のメッセージ配列。テキスト・画像・動画） */
+    content: MessageContent[]
+    send_at: string
+    status: 'pending' | 'sending' | 'sent' | 'failed' | 'cancelled'
+    sent_at: string | null
+    error_message: string | null
+    created_by: string | null
+    created_at: string
+}
+
+// =============================================================================
 // 面談の日程調整
 // =============================================================================
 
