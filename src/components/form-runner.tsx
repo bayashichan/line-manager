@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { FEW_SEATS_THRESHOLD, type FormAvailability } from '@/lib/forms/capacity'
+import { answerToText, type MyFormResponse } from '@/lib/forms/resubmit'
+import { formatDateTime } from '@/lib/utils'
 import type { FormEntryStatus, FormField } from '@/types'
 
 interface PublicForm {
@@ -10,9 +12,17 @@ interface PublicForm {
     description: string | null
     fields: FormField[]
     availability: FormAvailability | null // 残席設定がオフなら null
+    onePerUser: boolean // 1人1回まで（申込済みの人には修正するかを聞く）
 }
 
 type AnswerValue = string | string[]
+
+/**
+ * 画面の状態
+ * - already: 申込済み。「内容を修正しますか？」と聞いている
+ * - kept:    申込済みで、修正しないことを選んだ
+ */
+type RunnerStatus = 'loading' | 'ready' | 'submitting' | 'done' | 'already' | 'kept' | 'error'
 
 // フォームを開いている間に残席を取り直す間隔
 const AVAILABILITY_REFRESH_MS = 30_000
@@ -25,9 +35,14 @@ export function FormRunner({ formId }: { formId: string | null }) {
     const [form, setForm] = useState<PublicForm | null>(null)
     const [answers, setAnswers] = useState<Record<string, AnswerValue>>({})
     const [accessToken, setAccessToken] = useState<string | null>(null)
-    const [status, setStatus] = useState<'loading' | 'ready' | 'submitting' | 'done' | 'error'>('loading')
+    const [status, setStatus] = useState<RunnerStatus>('loading')
     const [errorMessage, setErrorMessage] = useState('')
     const [entryStatus, setEntryStatus] = useState<FormEntryStatus>('confirmed')
+    // 本人の申込（1人1回までのフォームで申込済みのとき）。修正するときはこれを書き換える
+    const [existing, setExisting] = useState<MyFormResponse | null>(null)
+    // new: 新しい申込 / edit: 申込済みの内容を修正している
+    const [mode, setMode] = useState<'new' | 'edit'>('new')
+    const [updated, setUpdated] = useState(false)
 
     // LIFF初期化 → アクセストークン取得 → フォーム定義取得
     useEffect(() => {
@@ -74,6 +89,9 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 }
                 setAccessToken(token)
 
+                // 申込済みかどうか（1人1回までのフォームのみ意味がある）。フォーム定義の取得と並行して聞く
+                const minePromise = fetchMyResponse(formId, token)
+
                 const result = await formPromise
                 if (!result.ok || !result.data) {
                     setErrorMessage(result.error || 'フォームを読み込めませんでした')
@@ -81,6 +99,15 @@ export function FormRunner({ formId }: { formId: string | null }) {
                     return
                 }
                 setForm(result.data)
+
+                const mine = result.data.onePerUser ? await minePromise : null
+                if (mine) {
+                    // 修正するときは今の申込内容から書き換えてもらう
+                    setExisting(mine)
+                    setAnswers(mine.answers)
+                    setStatus('already')
+                    return
+                }
                 setStatus('ready')
             } catch (err) {
                 console.error('フォーム初期化エラー:', err)
@@ -153,11 +180,18 @@ export function FormRunner({ formId }: { formId: string | null }) {
             const res = await fetch(`/api/forms/${form.id}/submit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessToken, answers }),
+                body: JSON.stringify({ accessToken, answers, mode: mode === 'edit' ? 'update' : 'new' }),
             })
 
             const data = await res.json().catch(() => ({}))
             if (!res.ok) {
+                // 申込済みだった（別の画面から先に申し込んでいたなど）。入力した内容は残したまま、修正するかを聞く
+                if (data.duplicate && data.response) {
+                    setExisting(data.response as MyFormResponse)
+                    setErrorMessage('')
+                    setStatus('already')
+                    return
+                }
                 // 入力中に満席になり締め切られた
                 if (data.full && form.availability) {
                     setForm({ ...form, availability: { ...form.availability, remaining: 0, state: 'closed' } })
@@ -171,22 +205,30 @@ export function FormRunner({ formId }: { formId: string | null }) {
             }
 
             setEntryStatus(data.entryStatus === 'waitlisted' ? 'waitlisted' : 'confirmed')
+            setUpdated(data.updated === true)
             setStatus('done')
 
             // 完了メッセージはトークに届くので、少し待ってからLIFFを閉じる
-            setTimeout(async () => {
-                try {
-                    const liff = (await import('@line/liff')).default
-                    if (liff.isInClient()) liff.closeWindow()
-                } catch {
-                    // 何もしない
-                }
-            }, 1800)
+            closeLiffSoon(1800)
         } catch (err) {
             console.error('送信エラー:', err)
             setErrorMessage('送信に失敗しました。通信環境をご確認ください。')
             setStatus('ready')
         }
+    }
+
+    // 申込済みの人が「修正する」を選んだ
+    const startEditing = () => {
+        setMode('edit')
+        setErrorMessage('')
+        setStatus('ready')
+        window.scrollTo({ top: 0 })
+    }
+
+    // 申込済みの人が「修正しない」を選んだ
+    const keepAsIs = () => {
+        setStatus('kept')
+        closeLiffSoon(1200)
     }
 
     // ---- 表示 ----
@@ -210,6 +252,17 @@ export function FormRunner({ formId }: { formId: string | null }) {
     }
 
     if (status === 'done') {
+        if (updated) {
+            return (
+                <Centered>
+                    <div className="w-16 h-16 rounded-full bg-[#06C755] flex items-center justify-center text-white text-3xl">✓</div>
+                    <p className="mt-5 text-slate-800 text-xl font-bold">修正が完了しました</p>
+                    <p className="mt-2 text-slate-500 text-sm text-center leading-relaxed">
+                        トーク画面に修正後の内容をお送りしました。<br />この画面は自動的に閉じます。
+                    </p>
+                </Centered>
+            )
+        }
         if (entryStatus === 'waitlisted') {
             return (
                 <Centered>
@@ -233,12 +286,37 @@ export function FormRunner({ formId }: { formId: string | null }) {
         )
     }
 
+    if (status === 'kept') {
+        return (
+            <Centered>
+                <div className="w-16 h-16 rounded-full bg-[#06C755] flex items-center justify-center text-white text-3xl">✓</div>
+                <p className="mt-5 text-slate-800 text-xl font-bold">お申し込み内容はそのままです</p>
+                <p className="mt-2 text-slate-500 text-sm text-center leading-relaxed">
+                    修正が必要になりましたら、もう一度このフォームを開いてください。<br />この画面は閉じて大丈夫です。
+                </p>
+            </Centered>
+        )
+    }
+
     if (!form) return null
 
+    // 申込済み: 新しい申込は受け付けず、内容を修正するかを聞く
+    if (status === 'already' && existing) {
+        return (
+            <AlreadyAppliedScreen
+                form={form}
+                existing={existing}
+                onEdit={startEditing}
+                onKeep={keepAsIs}
+            />
+        )
+    }
+
+    const editing = mode === 'edit'
     const availability = form.availability
 
-    // 満席で締め切ったフォーム
-    if (availability?.state === 'closed') {
+    // 満席で締め切ったフォーム（申込済みの人の修正は席を増やさないので受け付ける）
+    if (availability?.state === 'closed' && !editing) {
         return (
             <Centered>
                 <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center text-2xl">🈵</div>
@@ -264,7 +342,16 @@ export function FormRunner({ formId }: { formId: string | null }) {
                     )}
                 </div>
 
-                {availability && <AvailabilityBanner availability={availability} />}
+                {editing ? (
+                    <div className="mb-6 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
+                        <p className="text-sm font-bold text-sky-800">お申し込み内容の修正</p>
+                        <p className="mt-1 text-xs text-sky-700 leading-relaxed">
+                            修正したい項目を書き換えて「修正内容を送信する」を押してください。新しいお申し込みにはならず、今のお申し込み内容が書き換わります。
+                        </p>
+                    </div>
+                ) : (
+                    availability && <AvailabilityBanner availability={availability} />
+                )}
 
                 {/* 項目 */}
                 <div className="space-y-5">
@@ -298,8 +385,19 @@ export function FormRunner({ formId }: { formId: string | null }) {
                 >
                     {status === 'submitting'
                         ? '送信中...'
+                        : editing ? '修正内容を送信する'
                         : availability?.state === 'waitlist' ? 'キャンセル待ちで申し込む' : '送信する'}
                 </button>
+
+                {editing && (
+                    <button
+                        onClick={() => { setErrorMessage(''); setStatus('already') }}
+                        disabled={status === 'submitting'}
+                        className="mt-3 w-full py-3 rounded-xl text-slate-500 text-sm font-medium disabled:opacity-60"
+                    >
+                        修正をやめる
+                    </button>
+                )}
 
                 <p className="mt-4 text-center text-xs text-slate-400">
                     ※ このフォームはLINEアカウントと連携しています
@@ -307,6 +405,105 @@ export function FormRunner({ formId }: { formId: string | null }) {
             </div>
         </div>
     )
+}
+
+/**
+ * 申込済みの人に、今の申込内容を見せて「修正しますか？」と聞く画面。
+ */
+function AlreadyAppliedScreen({
+    form,
+    existing,
+    onEdit,
+    onKeep,
+}: {
+    form: PublicForm
+    existing: MyFormResponse
+    onEdit: () => void
+    onKeep: () => void
+}) {
+    return (
+        <div className="min-h-screen bg-slate-50 text-slate-900">
+            <div className="mx-auto max-w-xl px-5 py-8">
+                <div className="mb-6">
+                    <div className="w-11 h-11 rounded-xl bg-[#06C755] flex items-center justify-center mb-4">
+                        <span className="text-white text-lg font-bold">申</span>
+                    </div>
+                    <h1 className="text-2xl font-bold leading-snug">{form.title || 'お申し込みフォーム'}</h1>
+                </div>
+
+                <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                    <p className="text-sm font-bold text-emerald-800">このフォームはお申し込み済みです</p>
+                    <p className="mt-1 text-xs text-emerald-700 leading-relaxed">
+                        {`${formatDateTime(existing.createdAt)} にお申し込みいただきました`}
+                        {existing.editedAt && `（${formatDateTime(existing.editedAt)} に修正）`}
+                        {'。同じフォームへのお申し込みは1回までです。'}
+                    </p>
+                    {existing.entryStatus === 'waitlisted' && (
+                        <p className="mt-1 text-xs font-bold text-amber-700">キャンセル待ちで受け付けています。</p>
+                    )}
+                </div>
+
+                <p className="text-sm font-semibold mb-2">現在のお申し込み内容</p>
+                <dl className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+                    {form.fields.map((field) => {
+                        const text = answerToText(existing.answers[field.id])
+                        return (
+                            <div key={field.id} className="px-4 py-3">
+                                <dt className="text-xs text-slate-500">{field.label}</dt>
+                                <dd className={`mt-0.5 text-base whitespace-pre-wrap break-words ${text ? '' : 'text-slate-400'}`}>
+                                    {text || '（未回答）'}
+                                </dd>
+                            </div>
+                        )
+                    })}
+                </dl>
+
+                <p className="mt-8 text-center text-base font-bold">お申し込み内容を修正しますか？</p>
+                <button
+                    onClick={onEdit}
+                    className="mt-4 w-full py-3.5 rounded-xl bg-[#06C755] text-white font-bold text-base shadow-sm active:scale-[0.99] transition"
+                >
+                    内容を修正する
+                </button>
+                <button
+                    onClick={onKeep}
+                    className="mt-3 w-full py-3.5 rounded-xl border border-slate-300 bg-white text-slate-700 font-bold text-base active:scale-[0.99] transition"
+                >
+                    修正しない
+                </button>
+            </div>
+        </div>
+    )
+}
+
+/**
+ * 本人の申込を取得する（1人1回までのフォームで申込済みなら返る）。
+ * 確かめられなかったときは null を返してフォームを開く（送信時にサーバーが申込済みかを確かめる）。
+ */
+async function fetchMyResponse(formId: string, accessToken: string): Promise<MyFormResponse | null> {
+    try {
+        const res = await fetch(`/api/forms/${formId}/my-response`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            cache: 'no-store',
+        })
+        if (!res.ok) return null
+        const data = (await res.json()) as { response: MyFormResponse | null }
+        return data.response ?? null
+    } catch {
+        return null
+    }
+}
+
+/** LINEアプリ内で開いていれば、少し待ってからLIFFを閉じる */
+function closeLiffSoon(delayMs: number) {
+    setTimeout(async () => {
+        try {
+            const liff = (await import('@line/liff')).default
+            if (liff.isInClient()) liff.closeWindow()
+        } catch {
+            // 何もしない
+        }
+    }, delayMs)
 }
 
 /**
