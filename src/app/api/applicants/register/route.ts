@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
-import { normalizeApplicantProfile, applyPendingApplicantProfiles } from '@/lib/applicants'
+import { normalizeApplicantProfile, applyPendingApplicantProfiles, removeApplicantTags } from '@/lib/applicants'
 
 /**
  * 外部の申込フォームから申込者を連携する
@@ -17,6 +17,7 @@ import { normalizeApplicantProfile, applyPendingApplicantProfiles } from '@/lib/
  * - appliedAt:   申込日時（ISO文字列、任意）
  * - internalName: 友だちの管理用ネームに登録する名前（任意。例: 出展名）
  * - tagNames:    友だちに付与するタグ名の配列（任意。例: ["第7回出展者"]）。無いタグは作成する
+ * - removeTagNames: 友だちから外すタグ名の配列（任意。例: キャンセル待ちから繰り上げたときの ["第7回キャンセル待ち"]）
  *
  * 処理:
  *  1. Messaging API で「本当に友だちか」を判定する
@@ -25,6 +26,8 @@ import { normalizeApplicantProfile, applyPendingApplicantProfiles } from '@/lib/
  *  3. 友だち・非友だちを問わず applicants に記録する
  *  4. 友だちなら管理用ネーム・タグをその場で反映する。
  *     未友だちなら applicants に控えておき、友だち追加（Webhook）のときに反映する
+ *  5. 外すタグは、友だち一覧に載っていればその場で外す（ブロック中でも外す）。
+ *     未反映のまま控えていたタグからも除く（あとで友だち追加したときに付かないように）
  *
  * 呼び出しは必ずサーバー間で行うこと。シークレットをブラウザに渡してはいけない。
  */
@@ -139,7 +142,10 @@ export async function POST(request: NextRequest) {
         }
 
         const carryOver = previous && !previous.profile_applied_at ? previous : null
-        const tagNames = [...new Set([...((carryOver?.tag_names as string[] | null) || []), ...profile.tagNames])]
+        const tagNames = [...new Set([
+            ...((carryOver?.tag_names as string[] | null) || []).filter(name => !profile.removeTagNames.includes(name)),
+            ...profile.tagNames,
+        ])]
 
         const { error: applicantError } = await supabase.from('applicants').upsert(
             {
@@ -178,12 +184,42 @@ export async function POST(request: NextRequest) {
             }
         }
 
+        // --------------------------------------------------------------------
+        // STEP 5: 外すタグ
+        // ブロック中など友だち判定で外れた人も、友だち一覧に載っていれば外す
+        // （ブロック解除したときに、キャンセル待ち向けの配信対象に残っていないように）。
+        // --------------------------------------------------------------------
+        let tagsRemoved = false
+
+        if (profile.removeTagNames.length > 0) {
+            let targetUserId = linkedLineUserId
+            if (!targetUserId) {
+                const { data: existing } = await supabase
+                    .from('line_users')
+                    .select('id')
+                    .eq('channel_id', channelId)
+                    .eq('line_user_id', lineUserId)
+                    .maybeSingle()
+                targetUserId = existing?.id ?? null
+            }
+
+            if (targetUserId) {
+                try {
+                    await removeApplicantTags(supabase, channelId, targetUserId, profile.removeTagNames)
+                    tagsRemoved = true
+                } catch (err) {
+                    console.error(`申込者のタグ解除に失敗 (userId: ${lineUserId}):`, err)
+                }
+            }
+        }
+
         console.log(
             `申込者連携: ${lineUserId} (source: ${source}) → ${isFriend ? '友だち' : '未友だち'}` +
-            (profileApplied ? '（管理用ネーム・タグ反映済み）' : '')
+            (profileApplied ? '（管理用ネーム・タグ反映済み）' : '') +
+            (tagsRemoved ? `（タグ解除: ${profile.removeTagNames.join(', ')}）` : '')
         )
 
-        return NextResponse.json({ success: true, isFriend, profileApplied })
+        return NextResponse.json({ success: true, isFriend, profileApplied, tagsRemoved })
     } catch (error) {
         console.error('申込者連携エラー:', error)
         return NextResponse.json({ error: '内部サーバーエラー' }, { status: 500 })

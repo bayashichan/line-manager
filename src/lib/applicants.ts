@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { processRichMenuSwitchOnTagAssign } from '@/lib/rich-menu'
+import { processRichMenuSwitchOnTagAssign, processRichMenuSwitchOnTagRemove } from '@/lib/rich-menu'
 
 type AdminClient = ReturnType<typeof createAdminClient>
 
@@ -11,6 +11,11 @@ export interface ApplicantProfile {
     internalName: string | null
     /** 付与するタグ名。無いタグは作成する */
     tagNames: string[]
+    /**
+     * 外すタグ名（例: キャンセル待ちから繰り上げた人の「第7回キャンセル待ち」）。
+     * 付与するタグと同じ名前は外さない
+     */
+    removeTagNames: string[]
 }
 
 const MAX_INTERNAL_NAME_LENGTH = 100
@@ -24,22 +29,75 @@ const MAX_TAGS = 10
 export function normalizeApplicantProfile(input: {
     internalName?: unknown
     tagNames?: unknown
+    removeTagNames?: unknown
 }): ApplicantProfile {
     const internalName =
         typeof input.internalName === 'string'
             ? input.internalName.replace(/\s+/g, ' ').trim().slice(0, MAX_INTERNAL_NAME_LENGTH)
             : ''
 
-    const tagNames = Array.isArray(input.tagNames)
-        ? input.tagNames
+    const tagNames = normalizeTagNames(input.tagNames)
+    const removeTagNames = normalizeTagNames(input.removeTagNames).filter(name => !tagNames.includes(name))
+
+    return {
+        internalName: internalName || null,
+        tagNames,
+        removeTagNames,
+    }
+}
+
+function normalizeTagNames(input: unknown): string[] {
+    const names = Array.isArray(input)
+        ? input
             .filter((name): name is string => typeof name === 'string')
             .map(name => name.replace(/\s+/g, ' ').trim().slice(0, MAX_TAG_NAME_LENGTH))
             .filter(name => name.length > 0)
         : []
+    return [...new Set(names)].slice(0, MAX_TAGS)
+}
 
-    return {
-        internalName: internalName || null,
-        tagNames: [...new Set(tagNames)].slice(0, MAX_TAGS),
+/**
+ * 友だちからタグを外す（名前で指定。無いタグ・付いていないタグは何もしない）。
+ * 外したときは、タグ連動のリッチメニューも付け直す（管理画面でタグを外したときと同じ）。
+ * 友だち追加の有無にかかわらず、友だち一覧に載っている人なら外せる（ブロック中の人も含む）。
+ */
+export async function removeApplicantTags(
+    supabase: AdminClient,
+    channelId: string,
+    internalUserId: string,
+    tagNames: string[]
+): Promise<void> {
+    if (tagNames.length === 0) return
+
+    const { data: tags, error: tagsError } = await supabase
+        .from('tags')
+        .select('id')
+        .eq('channel_id', channelId)
+        .in('name', tagNames)
+
+    if (tagsError) {
+        throw new Error(`外すタグの取得に失敗: ${tagsError.message}`)
+    }
+    const tagIds = (tags || []).map(t => t.id as string)
+    if (tagIds.length === 0) return
+
+    const { data: removed, error: deleteError } = await supabase
+        .from('line_user_tags')
+        .delete()
+        .eq('line_user_id', internalUserId)
+        .in('tag_id', tagIds)
+        .select('tag_id')
+
+    if (deleteError) {
+        throw new Error(`タグを外すのに失敗: ${deleteError.message}`)
+    }
+    if (!removed || removed.length === 0) return
+
+    // タグ外し自体は完了している。リッチメニュー切替の失敗はログのみ
+    try {
+        await processRichMenuSwitchOnTagRemove(internalUserId)
+    } catch (err) {
+        console.error(`申込者タグ解除のリッチメニュー切替エラー (user: ${internalUserId}):`, err)
     }
 }
 
@@ -160,6 +218,7 @@ export async function applyPendingApplicantProfiles(
     await applyApplicantProfile(supabase, channelId, internalUserId, {
         internalName: latestFirst.find(a => a.internal_name)?.internal_name ?? null,
         tagNames: [...new Set(latestFirst.flatMap(a => (a.tag_names as string[] | null) || []))],
+        removeTagNames: [],
     })
 
     const { error: markError } = await supabase
