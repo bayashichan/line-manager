@@ -38,16 +38,23 @@ export async function GET(
 
         let availability = null
         if (form.capacity_enabled) {
-            const { count, error: countError } = await supabase
-                .from('form_responses')
-                .select('id', { count: 'exact', head: true })
-                .eq('form_id', form.id)
-                .eq('entry_status', 'confirmed')
+            // キャンセル待ちの人がいれば、空いた席はその人たちの繰り上げ用なので両方数える
+            const countByStatus = (status: 'confirmed' | 'waitlisted') =>
+                supabase
+                    .from('form_responses')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('form_id', form.id)
+                    .eq('entry_status', status)
+            const [confirmed, waitlisted] = await Promise.all([
+                countByStatus('confirmed'),
+                countByStatus('waitlisted'),
+            ])
+            const countError = confirmed.error ?? waitlisted.error
             if (countError) {
                 console.error('残席の集計エラー:', countError)
                 return NextResponse.json({ error: '受付状況を確認できませんでした' }, { status: 500 })
             }
-            availability = computeAvailability(form, count ?? 0)
+            availability = computeAvailability(form, confirmed.count ?? 0, waitlisted.count ?? 0)
         }
 
         return NextResponse.json({

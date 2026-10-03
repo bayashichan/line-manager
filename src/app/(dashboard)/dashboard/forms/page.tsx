@@ -720,6 +720,7 @@ export default function FormsPage() {
                                         )}
                                         <p className="text-xs text-slate-400">
                                             キャンセル待ちを除いた申込の数で数えます。回答を削除すると席が空きます。
+                                            キャンセル待ちの人がいる間は、空いた席を新しい申込には出さず、キャンセル待ちからの繰り上げ用に取っておきます。
                                         </p>
                                     </div>
 
@@ -956,10 +957,12 @@ function TagPicker({ tags, selectedIds, onToggle }: { tags: Tag[]; selectedIds: 
 // 一覧カードの残席表示（残席設定がオフなら何も出さない）
 // =============================================================================
 function CapacityBadge({ form, confirmedCount, waitlistCount }: { form: Form; confirmedCount: number; waitlistCount: number }) {
-    const availability = computeAvailability(form, confirmedCount)
+    const availability = computeAvailability(form, confirmedCount, waitlistCount)
     if (!availability) return null
 
     const { capacity, remaining, state } = availability
+    // キャンセル待ちの人の繰り上げ用に取ってある席（新しい申込には出していない）
+    const seatsToPromote = Math.min(waitlistCount, Math.max(0, capacity - confirmedCount))
     const label =
         state === 'open' ? `残り ${remaining} 席 / 定員 ${capacity} 席`
         : state === 'waitlist' ? `満席（定員 ${capacity} 席）・キャンセル待ち受付中`
@@ -981,6 +984,11 @@ function CapacityBadge({ form, confirmedCount, waitlistCount }: { form: Form; co
             </span>
             {waitlistCount > 0 && (
                 <span className="text-xs text-amber-700 dark:text-amber-300">キャンセル待ち {waitlistCount}件</span>
+            )}
+            {seatsToPromote > 0 && (
+                <span className="text-xs text-emerald-700 dark:text-emerald-300">
+                    空き {seatsToPromote} 席（キャンセル待ちから繰り上げできます）
+                </span>
             )}
         </div>
     )
