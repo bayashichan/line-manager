@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { deliverDueStepMessages } from '@/lib/step/deliver-due'
 
+// ステップ配信は時間の目安（25秒）まで送り続けるので、それより長く取る
+export const maxDuration = 60
+
 /**
  * ステップ配信を処理するCronジョブ
  * GET /api/cron/step-messages

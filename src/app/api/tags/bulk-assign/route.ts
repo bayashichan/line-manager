@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { processRichMenuSwitchOnTagAssign } from '@/lib/rich-menu'
+import { processBulkTagAssign } from '@/lib/rich-menu'
+
+// 友だちが多いときも、メニューの反映・ステップ配信の開始まで終えられるようにする
+export const maxDuration = 60
 
 /**
  * 複数ユーザーに複数タグを一括付与
@@ -54,12 +57,8 @@ export async function POST(request: NextRequest) {
 
         if (error) throw error
 
-        // リッチメニュー切り替え処理
-        for (const userId of userIds as string[]) {
-            for (const tagId of tagIds as string[]) {
-                await processRichMenuSwitchOnTagAssign(userId, tagId)
-            }
-        }
+        // リッチメニュー切り替え・タグ付与トリガーのステップ配信（人数が多くても止まらないよう、まとめて行う）
+        await processBulkTagAssign(userIds as string[], tagIds as string[])
 
         return NextResponse.json({ success: true, processed: userIds.length })
     } catch (error) {

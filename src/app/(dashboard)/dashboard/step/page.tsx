@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { Button, Input, Label, Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { cn, formatDelayMinutes, getCookie } from '@/lib/utils'
 import type { StepScenario, StepMessage, Tag } from '@/types'
@@ -180,17 +181,21 @@ export default function StepPage() {
         if (!currentChannelId || allUsers.length > 0) return
         setLoadingUsers(true)
         const supabase = createClient()
-        const { data } = await supabase
-            .from('line_users')
-            .select('id, display_name, picture_url, line_user_id')
-            .eq('channel_id', currentChannelId)
-            .eq('is_blocked', false)
-            .order('display_name')
-            .limit(500)
+        // 手動開始の対象に全員を選べるよう、ページングして全件取得する
+        // （以前は500人までで、それ以降の友だちは一覧に出ず選べなかった）
+        const { data, error } = await fetchAllRows<LineUser>((from, to) =>
+            supabase
+                .from('line_users')
+                .select('id, display_name, picture_url, line_user_id')
+                .eq('channel_id', currentChannelId)
+                .eq('is_blocked', false)
+                .order('display_name')
+                .order('id', { ascending: true })
+                .range(from, to)
+        )
 
-        if (data) {
-            setAllUsers(data as LineUser[])
-        }
+        if (error) console.error('友だちの取得エラー:', error)
+        setAllUsers(data)
         setLoadingUsers(false)
     }
 

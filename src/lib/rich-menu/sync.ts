@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineApiError, LineClient } from '@/lib/line'
+import { runWithConcurrency } from '@/lib/utils'
 import type { RichMenuArea } from '@/types'
 import { createLineRichMenu } from './publish'
 import {
@@ -79,18 +80,6 @@ async function withRetry<T>(run: () => Promise<T>): Promise<T> {
             await sleep(delays[attempt])
         }
     }
-}
-
-/** 同時実行数を絞って順に処理する */
-async function runWithConcurrency<T>(items: T[], limit: number, run: (item: T) => Promise<void>) {
-    let next = 0
-    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-        while (next < items.length) {
-            const item = items[next++]
-            await run(item)
-        }
-    })
-    await Promise.all(workers)
 }
 
 /** Supabase の1回あたりの上限（1000行）を超えて全件取得する */

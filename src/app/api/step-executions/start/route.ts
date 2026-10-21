@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isChannelMember } from '@/lib/auth/channel-access'
-import { calculateNextSendAt } from '@/lib/utils'
+import { calculateNextSendAt, chunk } from '@/lib/utils'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { startStepExecutions, USER_ID_LOOKUP_CHUNK } from '@/lib/step/start'
+
+// 友だちが多いときも、対象の確認と登録を最後まで終えられるようにする
+export const maxDuration = 60
 
 /**
  * ステップ配信を手動で開始するAPI
@@ -72,12 +77,19 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ error: 'ユーザーIDが必要です' }, { status: 400 })
             }
             // 他のチャンネルの友だちが混ざらないよう、シナリオと同じチャンネルの友だちだけに絞る
-            const { data: channelUsers } = await adminSupabase
-                .from('line_users')
-                .select('id')
-                .eq('channel_id', scenario.channel_id)
-                .in('id', userIds)
-            targetUserIds = (channelUsers ?? []).map(u => u.id)
+            // （一度に全員の id を IN 句に載せると URL 長の上限に当たって失敗するため、分けて引く）
+            for (const ids of chunk([...new Set(userIds as string[])], USER_ID_LOOKUP_CHUNK)) {
+                const { data: channelUsers, error: channelUsersError } = await adminSupabase
+                    .from('line_users')
+                    .select('id')
+                    .eq('channel_id', scenario.channel_id)
+                    .in('id', ids)
+                if (channelUsersError) {
+                    console.error('ステップ配信の対象の確認エラー:', channelUsersError)
+                    return NextResponse.json({ error: '対象の友だちの確認に失敗しました' }, { status: 500 })
+                }
+                targetUserIds.push(...(channelUsers ?? []).map(u => u.id))
+            }
         } else if (targetType === 'tag') {
             if (!tagId) {
                 return NextResponse.json({ error: 'タグIDが必要です' }, { status: 400 })
@@ -91,13 +103,21 @@ export async function POST(request: NextRequest) {
             if (!tag) {
                 return NextResponse.json({ error: 'タグが見つかりません' }, { status: 404 })
             }
-            // タグに紐づくユーザーを取得
-            const { data: tagUsers } = await adminSupabase
-                .from('line_user_tags')
-                .select('line_user_id')
-                .eq('tag_id', tagId)
+            // タグに紐づくユーザーを取得（1000行上限に当たらないようページングして全件取得する）
+            const { data: tagUsers, error: tagUsersError } = await fetchAllRows<{ line_user_id: string }>((from, to) =>
+                adminSupabase
+                    .from('line_user_tags')
+                    .select('line_user_id')
+                    .eq('tag_id', tagId)
+                    .order('id', { ascending: true })
+                    .range(from, to)
+            )
+            if (tagUsersError) {
+                console.error('ステップ配信の対象の取得エラー:', tagUsersError)
+                return NextResponse.json({ error: 'タグの友だちの取得に失敗しました' }, { status: 500 })
+            }
 
-            if (!tagUsers || tagUsers.length === 0) {
+            if (tagUsers.length === 0) {
                 return NextResponse.json({ error: 'このタグのユーザーが見つかりません' }, { status: 400 })
             }
             targetUserIds = tagUsers.map(tu => tu.line_user_id)
@@ -112,44 +132,23 @@ export async function POST(request: NextRequest) {
             startStepMessage.send_minute ?? 0
         )
 
-        // 既存のアクティブな実行を取得（重複回避）
-        let existingUserIds = new Set<string>()
-        if (targetUserIds.length > 0) {
-            const { data: existingExecutions } = await adminSupabase
-                .from('step_executions')
-                .select('line_user_id')
-                .eq('scenario_id', scenarioId)
-                .eq('status', 'active')
-                .in('line_user_id', targetUserIds)
+        // 新規にステップ実行を作成（実行中・実行済みの人はスキップ）
+        const result = await startStepExecutions(adminSupabase, {
+            scenarioId,
+            lineUserIds: targetUserIds,
+            currentStep: startStepMessage.step_order, // 実際の step_order を保存
+            nextSendAt,
+        })
 
-            existingUserIds = new Set(existingExecutions?.map(e => e.line_user_id) || [])
-        }
-
-        // 新規にステップ実行を作成（既存はスキップ）
-        let createdCount = 0
-        let skippedCount = 0
-
-        for (const userId of targetUserIds) {
-            if (existingUserIds.has(userId)) {
-                skippedCount++
-                continue
-            }
-
-            await adminSupabase.from('step_executions').insert({
-                scenario_id: scenarioId,
-                line_user_id: userId,
-                current_step: startStepMessage.step_order, // 実際の step_order を保存
-                next_send_at: nextSendAt,
-                status: 'active',
-            })
-            createdCount++
-        }
+        const notes = [`${result.skipped}人は既に実行中・実行済みのためスキップ`]
+        if (result.failed > 0) notes.push(`${result.failed}人は登録に失敗しました。時間をおいてもう一度お試しください`)
 
         return NextResponse.json({
             success: true,
-            created: createdCount,
-            skipped: skippedCount,
-            message: `${createdCount}人のステップ配信を開始しました（${skippedCount}人は既に実行中のためスキップ）`,
+            created: result.created,
+            skipped: result.skipped,
+            failed: result.failed,
+            message: `${result.created}人のステップ配信を開始しました（${notes.join('。')}）`,
         })
     } catch (error) {
         console.error('ステップ配信開始エラー:', error)

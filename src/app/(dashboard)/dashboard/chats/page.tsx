@@ -78,6 +78,8 @@ function ChatsPage() {
     const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
     // URLで指定された友だちを開いたかどうか（開いた後に一覧へ戻ったとき、また開き直さないため）
     const openedTargetUserIdRef = useRef<string | null>(null)
+    // 最後にトークを開いた友だち（素早く切り替えたとき、前の人の履歴で上書きしないため）
+    const messagesRequestUserIdRef = useRef<string | null>(null)
 
     // 送信予約（チャンネル全体の「予約中・送信中・送れなかった」予約。トーク画面と一覧の時計マークに使う）
     const [scheduledMessages, setScheduledMessages] = useState<ScheduledChatMessage[]>([])
@@ -285,17 +287,23 @@ function ChatsPage() {
         }
     }, [selectedUser, channelId])
 
+    // やりとりが1000件を超える人でも最新のメッセージまで出るよう、ページングして全件取得する
     async function fetchMessages(userId: string) {
-        const { data } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .eq('line_user_id', userId)
-            .order('created_at', { ascending: true })
+        messagesRequestUserIdRef.current = userId
+        const { data, error } = await fetchAllRows<ChatMessage>((from, to) =>
+            supabase
+                .from('chat_messages')
+                .select('*')
+                .eq('line_user_id', userId)
+                .order('created_at', { ascending: true })
+                .order('id', { ascending: true })
+                .range(from, to)
+        )
 
-        if (data) {
-            setMessages(data as any)
-            scrollToBottom()
-        }
+        if (messagesRequestUserIdRef.current !== userId) return
+        if (error) console.error('チャット履歴の取得エラー:', error)
+        setMessages(data)
+        scrollToBottom()
     }
 
     async function markAsRead(userId: string) {

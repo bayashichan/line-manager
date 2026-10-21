@@ -1,7 +1,9 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { calculateNextSendAt } from '@/lib/utils'
+import { startStepExecutions } from '@/lib/step/start'
 import { pickTagMenuId, type TagMenuCandidate } from './plan'
+import { syncChannelRichMenus } from './sync'
 
 export { syncChannelRichMenus, syncScheduledRichMenus, saveRichMenuRules } from './sync'
 export type { RichMenuSyncOptions, RichMenuSyncResult, RichMenuRuleChanges } from './sync'
@@ -30,7 +32,51 @@ export async function processRichMenuSwitchOnTagAssign(
     await recalculateAndSwitchUserRichMenu(lineUserId)
 
     // タグ付与トリガーのステップ配信を開始
-    await startTagStepScenarios(supabase, lineUserId, tagId)
+    await startTagStepScenarios(supabase, [lineUserId], tagId)
+}
+
+/**
+ * 複数の友だちにまとめてタグを付けたあとの処理（友だち一覧の一括タグ付与）。
+ *
+ * 1人ずつ processRichMenuSwitchOnTagAssign を呼ぶと人数に比例して時間がかかり、
+ * 友だちが多いと途中で時間切れになって、後半の人にメニュー切り替えやステップ配信が届かないため、まとめて行う。
+ * - リッチメニュー: タグ連動メニューのあるタグを付けたときだけ、そのチャンネルを一括で揃え直す
+ *   （「LINEと揃え直す」と同じ処理。メニューのないタグを付けても表示は変わらない）
+ * - ステップ配信: タグ付与トリガーのシナリオを、まだ実行中でない人にまとめて開始する
+ */
+export async function processBulkTagAssign(
+    lineUserIds: string[],
+    tagIds: string[]
+): Promise<void> {
+    const supabase = createAdminClient()
+
+    const { data: tags, error } = await supabase
+        .from('tags')
+        .select('id, channel_id, linked_rich_menu_id')
+        .in('id', tagIds)
+
+    if (error) {
+        console.error('一括タグ付与後の処理: タグの取得エラー:', error)
+        return
+    }
+
+    const channelIds = new Set(
+        (tags ?? []).filter(t => t.linked_rich_menu_id).map(t => t.channel_id as string)
+    )
+    for (const channelId of channelIds) {
+        try {
+            const result = await syncChannelRichMenus(channelId)
+            if (result.warnings.length > 0) {
+                console.warn(`一括タグ付与後のリッチメニュー反映 (channelId: ${channelId}):`, result.warnings)
+            }
+        } catch (err) {
+            console.error(`一括タグ付与後のリッチメニュー反映エラー (channelId: ${channelId}):`, err)
+        }
+    }
+
+    for (const tagId of tagIds) {
+        await startTagStepScenarios(supabase, lineUserIds, tagId)
+    }
 }
 
 /**
@@ -153,11 +199,11 @@ async function determineTagRichMenuForUser(
 }
 
 /**
- * タグ付与トリガーのステップ配信を開始
+ * タグ付与トリガーのステップ配信を開始（まだ実行中でない人だけ）
  */
 async function startTagStepScenarios(
     supabase: ReturnType<typeof createAdminClient>,
-    lineUserId: string,
+    lineUserIds: string[],
     tagId: string
 ): Promise<void> {
     // このタグをトリガーとするシナリオを取得
@@ -179,28 +225,22 @@ async function startTagStepScenarios(
     if (!scenarios || scenarios.length === 0) return
 
     for (const scenario of scenarios) {
-        // 既に実行中でないか確認
-        const { data: existing } = await supabase
-            .from('step_executions')
-            .select('id')
-            .eq('scenario_id', scenario.id)
-            .eq('line_user_id', lineUserId)
-            .eq('status', 'active')
-            .single()
-
-        if (existing) continue
-
         const firstMessage = scenario.step_messages?.[0]
         const delayMinutes = firstMessage?.delay_minutes || 0
         const sendHour = firstMessage?.send_hour ?? null
         const sendMinute = firstMessage?.send_minute ?? 0
         const nextSendAt = calculateNextSendAt(new Date(), delayMinutes, sendHour, sendMinute)
 
-        await supabase.from('step_executions').insert({
-            scenario_id: scenario.id,
-            line_user_id: lineUserId,
-            current_step: 1,
-            next_send_at: nextSendAt,
-        })
+        // 失敗してもタグの付与自体は済んでいるので、ほかのシナリオは続ける
+        try {
+            await startStepExecutions(supabase, {
+                scenarioId: scenario.id,
+                lineUserIds,
+                currentStep: 1,
+                nextSendAt,
+            })
+        } catch (err) {
+            console.error(`タグ付与トリガーのステップ配信開始エラー (scenarioId: ${scenario.id}):`, err)
+        }
     }
 }

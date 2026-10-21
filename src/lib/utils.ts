@@ -137,6 +137,20 @@ export function chunk<T>(array: T[], size: number): T[][] {
 }
 
 /**
+ * 同時実行数を絞って順に処理する（遅い1件に引きずられないよう、空いた枠から次を始める）
+ */
+export async function runWithConcurrency<T>(items: T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
+    let next = 0
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+            const item = items[next++]
+            await run(item)
+        }
+    })
+    await Promise.all(workers)
+}
+
+/**
  * Cookieを取得
  */
 export function getCookie(name: string): string | null {
