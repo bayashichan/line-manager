@@ -40,7 +40,7 @@ const FORM_FULL_ERROR = 'FORM_FULL'
  *     - mode='update': 申込済みの回答を書き換え、修正の確認メッセージを送って終わる
  *       （申込状態・タグ・完了時の自動返信は最初の申込のまま）
  *  4. 回答を保存（残席設定がオンなら、DBのトリガーが定員から申込/キャンセル待ちを決める。
- *     締切設定で満席なら保存されず 409 を返す）
+ *     締切設定で満席なら保存されず 409 を返す）。申込時点のLINE表示名も控える
  *  5. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
  *     キャンセル待ちならキャンセル待ち用の自動返信を送る
  *  6. 完了タグ（キャンセル待ちならキャンセル待ち用のタグ）を付与し、必要ならリッチメニューを再判定
@@ -138,7 +138,7 @@ export async function POST(
             const existing = await findLatestOwnResponse(supabase, form.id, userId)
             if (existing) {
                 if (submitMode !== 'update') return duplicateResponse(existing)
-                return await updateOwnResponse(supabase, form, existing, cleanAnswers, userId, name)
+                return await updateOwnResponse(supabase, form, existing, cleanAnswers, userId, name, displayName)
             }
             // 修正しようとしたが申込が見つからない（管理画面で削除されたなど）ときは、新しい申込として受け付ける
         }
@@ -175,6 +175,8 @@ export async function POST(
             console.error('回答保存エラー:', insertError)
             return NextResponse.json({ error: '回答の保存に失敗しました' }, { status: 500 })
         }
+
+        await saveLineDisplayName(supabase, response.id, displayName)
 
         // 送信元チャンネルのアクセストークンを取得（自動返信push用）
         const { data: channel } = await supabase
@@ -280,7 +282,8 @@ async function updateOwnResponse(
     existing: FormResponse,
     answers: Record<string, string | string[]>,
     userId: string,
-    name: string
+    name: string,
+    displayName: string
 ) {
     const { error: updateError } = await supabase
         .from('form_responses')
@@ -291,6 +294,9 @@ async function updateOwnResponse(
         console.error(`申込内容の修正エラー (responseId: ${existing.id}):`, updateError)
         return NextResponse.json({ error: '申込内容の修正に失敗しました' }, { status: 500 })
     }
+
+    // LINE名を変えていることもあるので、修正時点の名前に揃える
+    await saveLineDisplayName(supabase, existing.id, displayName)
 
     const { data: channel } = await supabase
         .from('channels')
@@ -312,6 +318,26 @@ async function updateOwnResponse(
         updated: true,
         entryStatus: toMyFormResponse(existing).entryStatus,
     })
+}
+
+/**
+ * 申込者のLINE表示名（LIFFのプロフィールの名前）を回答に控える。
+ * 友だちでない人は友だち情報に名前が無いため、申込者一覧・回答一覧ではこの名前で見分ける。
+ * 列はマイグレーション適用前には無いので、回答の保存とは分けて書き、失敗しても申込は続ける。
+ */
+async function saveLineDisplayName(
+    supabase: ReturnType<typeof createAdminClient>,
+    responseId: string,
+    displayName: string
+) {
+    if (!displayName) return
+    const { error } = await supabase
+        .from('form_responses')
+        .update({ line_display_name: displayName })
+        .eq('id', responseId)
+    if (error) {
+        console.error(`申込者のLINE表示名を記録できませんでした (responseId: ${responseId}):`, error)
+    }
 }
 
 /**

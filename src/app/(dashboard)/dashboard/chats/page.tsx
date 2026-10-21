@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -75,6 +76,8 @@ function ChatsPage() {
     const supabase = createClient()
     const messagesViewportRef = useRef<HTMLDivElement>(null)
     const [isInputFocused, setIsInputFocused] = useState(false) // Added state at correct location
+    // URLで指定された友だちを開いたかどうか（開いた後に一覧へ戻ったとき、また開き直さないため）
+    const openedTargetUserIdRef = useRef<string | null>(null)
 
     // 送信予約（チャンネル全体の「予約中・送信中・送れなかった」予約。トーク画面と一覧の時計マークに使う）
     const [scheduledMessages, setScheduledMessages] = useState<ScheduledChatMessage[]>([])
@@ -124,16 +127,23 @@ function ChatsPage() {
     }, [])
 
     // 友だちリスト取得
+    // 1000行上限に当たらないようページングして全件取得する。上限で切れると、やりとりの無い友だち
+    // （申込者一覧の「チャット」から開きたいキャンセル待ちの人など）が一覧に載らず開けなくなる
     async function fetchUsers(cId: string) {
         setIsLoadingUsers(true)
-        const { data } = await supabase
-            .from('line_users')
-            .select('*')
-            .eq('channel_id', cId)
-            .order('last_message_at', { ascending: false, nullsFirst: false })
-            .order('updated_at', { ascending: false })
+        const { data, error } = await fetchAllRows<ChatUser>((from, to) =>
+            supabase
+                .from('line_users')
+                .select('*')
+                .eq('channel_id', cId)
+                .order('last_message_at', { ascending: false, nullsFirst: false })
+                .order('updated_at', { ascending: false })
+                .order('id', { ascending: true })
+                .range(from, to)
+        )
 
-        if (data) setUsers(data as any)
+        if (error) console.error('友だちリストの取得エラー:', error)
+        setUsers(data)
         setIsLoadingUsers(false)
     }
 
@@ -168,15 +178,33 @@ function ChatsPage() {
         return summary
     }, [scheduledMessages])
 
-    // URLパラメータによる自動選択
+    // URLパラメータによる自動選択（友だち一覧・申込者一覧の「チャット」ボタンから来たとき）
+    // 一覧に見当たらないとき（読み込みの途中失敗など）は、その1人を直接取得して開く
     useEffect(() => {
-        if (targetUserId && users.length > 0 && !selectedUser) {
-            const target = users.find(u => u.id === targetUserId)
-            if (target) {
-                setSelectedUser(target)
-            }
+        if (!targetUserId || !channelId || isLoadingUsers) return
+        if (openedTargetUserIdRef.current === targetUserId) return
+        openedTargetUserIdRef.current = targetUserId
+
+        const target = users.find(u => u.id === targetUserId)
+        if (target) {
+            setSelectedUser(target)
+            return
         }
-    }, [targetUserId, users, selectedUser])
+
+        supabase
+            .from('line_users')
+            .select('*')
+            .eq('channel_id', channelId)
+            .eq('id', targetUserId)
+            .maybeSingle()
+            .then(({ data, error }) => {
+                if (error) console.error('指定された友だちの取得エラー:', error)
+                if (!data) return
+                const user = data as ChatUser
+                setUsers(prev => (prev.some(u => u.id === user.id) ? prev : [user, ...prev]))
+                setSelectedUser(user)
+            })
+    }, [targetUserId, channelId, isLoadingUsers, users])
 
     // 友だちリストのリアルタイム更新（未読バッジ・並び順）
     useEffect(() => {

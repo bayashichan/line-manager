@@ -9,6 +9,7 @@ import { sendMetaCapiEvent } from '@/lib/meta-capi'
 import { applyPendingApplicantProfiles } from '@/lib/applicants'
 import { getAppBaseUrl } from '@/lib/app-url'
 import { handleBookingMessage } from '@/lib/booking/service'
+import { UNKNOWN_DISPLAY_NAME } from '@/lib/line/display-name'
 
 interface WebhookEvent {
     type: string
@@ -211,12 +212,15 @@ async function handleFollow(
 
         // ====================================================================
         // STEP 1: プロフィール取得（3秒タイムアウト付き）
+        // 取れなかった（タイムアウト・LINE APIのエラー）ときは null にして、ユーザー保存は続ける
         // ====================================================================
-        const defaultProfile = { userId, displayName: '不明なユーザー', pictureUrl: undefined, statusMessage: undefined }
         const profile = await fetchWithTimeout(
-            lineClient.getProfile(userId),
+            lineClient.getProfile(userId).catch((err) => {
+                console.warn(`プロフィール取得エラー (userId: ${userId}):`, err)
+                return null
+            }),
             3000,
-            defaultProfile
+            null
         )
 
         // ====================================================================
@@ -225,15 +229,21 @@ async function handleFollow(
         // ====================================================================
         // followed_at は follow イベント時のみ明示的に指定する。
         // 未指定なら新規行は DB の DEFAULT NOW() が入り、既存行は元の値が保持される。
+        // プロフィールを取れなかったときは名前・アイコンを送らない（登録済みの名前を仮の名前で
+        // 上書きすると、申込者一覧やチャットで誰なのか分からなくなるため）。
         const { data: upsertedUser, error: upsertError } = await supabase
             .from('line_users')
             .upsert(
                 {
                     channel_id: channel.id,
                     line_user_id: userId,
-                    display_name: profile.displayName,
-                    picture_url: profile.pictureUrl,
-                    status_message: profile.statusMessage,
+                    ...(profile
+                        ? {
+                            display_name: profile.displayName,
+                            picture_url: profile.pictureUrl,
+                            status_message: profile.statusMessage,
+                        }
+                        : {}),
                     is_blocked: false,
                     ...(options.updateFollowedAt ? { followed_at: new Date().toISOString() } : {}),
                 },
@@ -241,7 +251,7 @@ async function handleFollow(
                     onConflict: 'channel_id,line_user_id',
                 }
             )
-            .select('id')
+            .select('id, display_name')
             .single()
 
         if (upsertError || !upsertedUser) {
@@ -250,7 +260,18 @@ async function handleFollow(
             return
         }
 
-        console.log(`友だち追加/更新: ${profile.displayName} (${userId}) → DB ID: ${upsertedUser.id}`)
+        // 新しく登録した友だちの名前を取れなかったときだけ仮の名前を入れる（次のメッセージ受信時に取り直す）
+        if (!profile && !upsertedUser.display_name) {
+            const { error: nameError } = await supabase
+                .from('line_users')
+                .update({ display_name: UNKNOWN_DISPLAY_NAME })
+                .eq('id', upsertedUser.id)
+            if (nameError) {
+                console.error(`仮の表示名の保存エラー (userId: ${userId}):`, nameError)
+            }
+        }
+
+        console.log(`友だち追加/更新: ${profile?.displayName ?? '（プロフィール取得失敗）'} (${userId}) → DB ID: ${upsertedUser.id}`)
 
         // ====================================================================
         // STEP 2.2: 申込フォームの管理用ネーム・タグを反映
