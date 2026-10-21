@@ -5,9 +5,10 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { fetchRespondentLineUsers, respondentLineName, type RespondentLineUser } from '@/lib/forms/respondent-line-user'
 import { Button, Input, Card, CardContent } from '@/components/ui'
 import { cn, formatDateTime, getCookie } from '@/lib/utils'
-import type { Applicant, Form, FormField, FormResponse, LineUser } from '@/types'
+import type { Applicant, Form, FormField, FormResponse } from '@/types'
 import {
     CompletionReplyBadge,
     completionReplyDetail,
@@ -141,11 +142,6 @@ export default function ApplicantsPage() {
 // 申込フォームの申込者
 // =============================================================================
 
-type ApplicantUser = Pick<
-    LineUser,
-    'id' | 'line_user_id' | 'display_name' | 'internal_name' | 'picture_url' | 'is_blocked'
->
-
 type FriendStatus = 'friend' | 'blocked' | 'not_friend'
 
 const FRIEND_STATUS_LABELS: Record<FriendStatus, string> = {
@@ -163,10 +159,7 @@ const FRIEND_STATUS_CLASSES: Record<FriendStatus, string> = {
 // 一覧で最初から見せる回答の数。これを超える分は行ごとに開いて見る
 const SUMMARY_FIELD_COUNT = 4
 
-// line_users を userId の IN 句で引くときの分割数（URL長の上限に当てないため）
-const USER_LOOKUP_CHUNK = 100
-
-function friendStatusOf(user: ApplicantUser | undefined): FriendStatus {
+function friendStatusOf(user: RespondentLineUser | undefined): FriendStatus {
     if (!user) return 'not_friend'
     return user.is_blocked ? 'blocked' : 'friend'
 }
@@ -191,7 +184,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
     const [responseCounts, setResponseCounts] = useState<Record<string, number>>({})
     const [selectedFormId, setSelectedFormId] = useState<string | null>(null)
     const [responses, setResponses] = useState<FormResponse[]>([])
-    const [users, setUsers] = useState<Record<string, ApplicantUser>>({})
+    const [users, setUsers] = useState<Record<string, RespondentLineUser>>({})
     const [loading, setLoading] = useState(true)
     const [listLoading, setListLoading] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -255,25 +248,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                 .range(from, to)
         )
 
-        // 申込の後に友だち追加した人も友だちとして扱えるよう、保存時の内部IDではなく
-        // LINEのuserIdで line_users を引き直す
-        const rawIds = [...new Set(data.map(r => r.line_user_id_raw).filter((id): id is string => !!id))]
-        const userMap: Record<string, ApplicantUser> = {}
-        let userError: unknown = null
-        for (let i = 0; i < rawIds.length; i += USER_LOOKUP_CHUNK) {
-            const { data: userRows, error: chunkError } = await supabase
-                .from('line_users')
-                .select('id, line_user_id, display_name, internal_name, picture_url, is_blocked')
-                .eq('channel_id', channelId)
-                .in('line_user_id', rawIds.slice(i, i + USER_LOOKUP_CHUNK))
-            if (chunkError) {
-                userError = chunkError
-                break
-            }
-            for (const u of (userRows ?? []) as ApplicantUser[]) {
-                userMap[u.line_user_id] = u
-            }
-        }
+        const { data: userMap, error: userError } = await fetchRespondentLineUsers(supabase, channelId, data)
 
         if (seq !== requestSeq.current) return
 
@@ -326,7 +301,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
         ? responses.filter(r => {
             const user = userOf(r)
             const values = [
-                user?.display_name,
+                respondentLineName(r, user),
                 user?.internal_name,
                 ...Object.values(r.answers).flat(),
             ]
@@ -349,7 +324,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                 formatDateTime(r.created_at),
                 r.edited_at ? formatDateTime(r.edited_at) : '',
                 r.entry_status === 'waitlisted' ? 'キャンセル待ち' : '申込',
-                user?.display_name || '',
+                respondentLineName(r, user),
                 user?.internal_name || '',
                 FRIEND_STATUS_LABELS[friendStatusOf(user)],
                 r.line_user_id_raw || '',
@@ -490,7 +465,14 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                             const user = userOf(r)
                             const status = friendStatusOf(user)
                             const enteredName = nameField ? answerText(r, nameField.id) : ''
-                            const lineName = user?.internal_name || user?.display_name || ''
+                            const lineName = respondentLineName(r, user)
+                            const internalName = user?.internal_name || ''
+                            const title = enteredName || internalName || lineName || '名前なし'
+                            // 入力された名前だけでは誰か分からないことがあるため、LINE登録名と管理用ネームも別に出す
+                            const subNames = [
+                                lineName && lineName !== title ? `LINE名: ${lineName}` : '',
+                                internalName && internalName !== title && internalName !== lineName ? `管理用ネーム: ${internalName}` : '',
+                            ].filter(Boolean)
                             const expanded = expandedIds.has(r.id)
                             const shownFields = expanded ? detailFields : detailFields.slice(0, SUMMARY_FIELD_COUNT)
                             const hiddenCount = detailFields.length - SUMMARY_FIELD_COUNT
@@ -501,7 +483,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                     {user?.picture_url ? (
                                         <img
                                             src={user.picture_url}
-                                            alt={user.display_name || ''}
+                                            alt={lineName}
                                             className="w-10 h-10 rounded-full object-cover shrink-0"
                                         />
                                     ) : (
@@ -515,7 +497,7 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                             <div className="min-w-0">
                                                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                                     <h3 className="font-medium truncate">
-                                                        {enteredName || lineName || '名前なし'}
+                                                        {title}
                                                     </h3>
                                                     <span className={cn('px-2 py-0.5 text-xs rounded-full', FRIEND_STATUS_CLASSES[status])}>
                                                         {FRIEND_STATUS_LABELS[status]}
@@ -527,13 +509,15 @@ function FormApplicantsView({ channelId }: { channelId: string }) {
                                                     )}
                                                     <CompletionReplyBadge record={r} />
                                                 </div>
+                                                {subNames.length > 0 && (
+                                                    <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 break-words">
+                                                        {subNames.join(' ・ ')}
+                                                    </p>
+                                                )}
                                                 <p className="text-xs text-slate-400 mt-0.5">
                                                     {formatDateTime(r.created_at)} 申込
                                                     {r.edited_at && (
                                                         <span className="text-sky-600 dark:text-sky-400"> ・ {formatDateTime(r.edited_at)} 本人が修正</span>
-                                                    )}
-                                                    {enteredName && lineName && enteredName !== lineName && (
-                                                        <span className="text-slate-500"> ・ LINE: {lineName}</span>
                                                     )}
                                                 </p>
                                                 {replyDetail && (

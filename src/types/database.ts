@@ -255,6 +255,7 @@ export interface FormResponse {
     channel_id: string
     line_user_id: string | null
     line_user_id_raw: string | null
+    line_display_name: string | null // 申込時点のLINE表示名（NULL = 記録なし。機能追加前の回答）
     answers: Record<string, string | string[]>
     entry_status: FormEntryStatus
     completion_reply_status: CompletionReplyStatus | null // NULL = 記録なし（機能追加前の回答）

@@ -7,6 +7,7 @@ import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Form, FormEntryStatus, FormField, FormFieldType, FormFullAction, FormResponse, Tag, MessageContent } from '@/types'
 import { uploadToR2 } from '@/lib/storage/upload-client'
 import { computeAvailability, DEFAULT_WAITLIST_MESSAGE, FEW_SEATS_THRESHOLD } from '@/lib/forms/capacity'
+import { fetchRespondentLineUsers, respondentLineName, type RespondentLineUser } from '@/lib/forms/respondent-line-user'
 import { CompletionReplyBadge, completionReplyDetail, completionReplyLabel } from '@/components/completion-reply-status'
 import {
     ClipboardList,
@@ -999,7 +1000,15 @@ function CapacityBadge({ form, confirmedCount, waitlistCount }: { form: Form; co
 // =============================================================================
 type FormResponseRow = Pick<
     FormResponse,
-    'id' | 'answers' | 'created_at' | 'edited_at' | 'entry_status' | 'completion_reply_status' | 'completion_reply_error'
+    | 'id'
+    | 'line_user_id_raw'
+    | 'line_display_name'
+    | 'answers'
+    | 'created_at'
+    | 'edited_at'
+    | 'entry_status'
+    | 'completion_reply_status'
+    | 'completion_reply_error'
 >
 
 const ENTRY_STATUS_LABELS: Record<FormEntryStatus, string> = {
@@ -1009,6 +1018,8 @@ const ENTRY_STATUS_LABELS: Record<FormEntryStatus, string> = {
 
 function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () => void; onChanged?: () => void }) {
     const [responses, setResponses] = useState<FormResponseRow[]>([])
+    // LINEのuserId → 友だち情報（LINE名の表示用）
+    const [users, setUsers] = useState<Record<string, RespondentLineUser>>({})
     const [loading, setLoading] = useState(true)
     const [editing, setEditing] = useState<FormResponseRow | null>(null)
     const [editValues, setEditValues] = useState<Record<string, string | string[]>>({})
@@ -1026,11 +1037,22 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                 .eq('form_id', form.id)
                 .order('created_at', { ascending: false })
                 .limit(1000)
-            setResponses((data as FormResponseRow[]) || [])
+            const rows = (data as FormResponseRow[]) || []
+
+            // 入力された名前だけでは誰か分からないことがあるため、LINE名も出す
+            // （取れなくても回答の一覧は出す。その場合は申込時に控えた名前だけになる）
+            const { data: userMap, error: userError } = await fetchRespondentLineUsers(supabase, form.channel_id, rows)
+            if (userError) console.error('回答者の友だち情報の取得エラー:', userError)
+
+            setResponses(rows)
+            setUsers(userMap)
             setLoading(false)
         }
         fetchResponses()
-    }, [form.id])
+    }, [form.id, form.channel_id])
+
+    const lineNameOf = (r: FormResponseRow) =>
+        respondentLineName(r, r.line_user_id_raw ? users[r.line_user_id_raw] : undefined)
 
     // マイグレーション適用前の回答には申込状態が無いので、通常の申込として扱う
     const isWaitlisted = (r: FormResponseRow) => r.entry_status === 'waitlisted'
@@ -1138,10 +1160,11 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
             const s = v ?? ''
             return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
         }
-        const headers = ['送信日時', '本人による修正日時', '申込状態', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
+        const headers = ['送信日時', '本人による修正日時', 'LINE名', '申込状態', '自動返信', '自動返信の理由', ...form.fields.map((f) => f.label)]
         const rows = responses.map((r) => [
             formatDateTime(r.created_at),
             r.edited_at ? formatDateTime(r.edited_at) : '',
+            lineNameOf(r),
             entryStatusText(r),
             completionReplyLabel(r),
             completionReplyDetail(r) || '',
@@ -1199,6 +1222,7 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
                                 <tr>
                                     <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">送信日時</th>
+                                    <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">LINE名</th>
                                     {showEntryStatus && (
                                         <th className="text-left font-semibold px-3 py-2 whitespace-nowrap border-b border-slate-200 dark:border-slate-700">申込状態</th>
                                     )}
@@ -1221,6 +1245,9 @@ function ResponsesModal({ form, onClose, onChanged }: { form: Form; onClose: () 
                                                     {formatDateTime(r.edited_at)} 本人が修正
                                                 </span>
                                             )}
+                                        </td>
+                                        <td className="px-3 py-2 align-top min-w-[6rem] max-w-[12rem] break-words text-slate-800 dark:text-slate-200">
+                                            {lineNameOf(r) || <span className="text-slate-300 dark:text-slate-600">—</span>}
                                         </td>
                                         {showEntryStatus && (
                                             <td className="px-3 py-2 align-top whitespace-nowrap">
