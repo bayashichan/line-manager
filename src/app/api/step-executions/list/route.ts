@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { getSessionUser, isChannelMember } from '@/lib/auth/channel-access'
 import { cookies } from 'next/headers'
 
@@ -28,39 +29,45 @@ export async function GET(request: Request) {
         const status = searchParams.get('status')
         const scenarioId = searchParams.get('scenarioId')
 
-        // 配信状況を取得
-        let query = supabase
-            .from('step_executions')
-            .select(`
-                id,
-                current_step,
-                status,
-                next_send_at,
-                started_at,
-                completed_at,
-                step_scenarios!inner (
+        // 配信状況を取得（1000行上限で切れると件数の集計も少なく出るため、ページングして全件取得する）
+        const buildQuery = (from: number, to: number) => {
+            let query = supabase
+                .from('step_executions')
+                .select(`
                     id,
-                    name,
-                    channel_id
-                ),
-                line_users!inner (
-                    id,
-                    display_name,
-                    picture_url,
-                    line_user_id
-                )
-            `)
-            .eq('step_scenarios.channel_id', channelId)
-            .order('started_at', { ascending: false })
+                    current_step,
+                    status,
+                    next_send_at,
+                    started_at,
+                    completed_at,
+                    step_scenarios!inner (
+                        id,
+                        name,
+                        channel_id
+                    ),
+                    line_users!inner (
+                        id,
+                        display_name,
+                        picture_url,
+                        line_user_id
+                    )
+                `)
+                .eq('step_scenarios.channel_id', channelId)
 
-        if (status) {
-            query = query.eq('status', status)
-        }
-        if (scenarioId && scenarioId !== 'all') {
-            query = query.eq('scenario_id', scenarioId)
+            if (status) {
+                query = query.eq('status', status)
+            }
+            if (scenarioId && scenarioId !== 'all') {
+                query = query.eq('scenario_id', scenarioId)
+            }
+
+            return query
+                .order('started_at', { ascending: false })
+                .order('id', { ascending: true })
+                .range(from, to)
         }
 
-        const { data: executions, error } = await query
+        const { data: executions, error } = await fetchAllRows(buildQuery)
 
         if (error) {
             console.error('配信状況取得エラー:', error)

@@ -4,13 +4,15 @@ import {
     LineClient,
     LineContentError,
     buildLineMessages,
-    hasNamePlaceholder,
-    replaceNamePlaceholder,
     toErrorMessage,
 } from '@/lib/line'
-import { chunk } from '@/lib/utils'
 import { resolveRecipients } from '@/lib/messaging/recipients'
+import { deliverToRecipients } from '@/lib/messaging/deliver'
 import { claimMessageForSending } from '@/lib/messaging/claim'
+
+// {name} 入りの配信は1人ずつ送るため、友だちが多いと時間がかかる。途中で止まって
+// 一部の人にしか届かないまま「送信中」で残らないよう、長めに取る
+export const maxDuration = 300
 
 /**
  * 予約配信を処理するCronジョブ
@@ -127,52 +129,8 @@ export async function GET(request: NextRequest) {
                 // LINE クライアント作成
                 const lineClient = new LineClient(channel.channel_access_token)
 
-                // メッセージ送信（500人ずつバッチ処理）
-                const lineUserIds = recipients.map(r => r.line_user_id)
-                const batches = chunk(lineUserIds, 500)
-
-                let successCount = 0
-                let failureCount = 0
-                let firstError: string | null = null
-
-                const recordError = (error: unknown) => {
-                    if (!firstError) {
-                        firstError = toErrorMessage(error)
-                    }
-                }
-
-                if (hasNamePlaceholder(lineMessages)) {
-                    // {name} を含む場合は個別送信（マルチキャストでは置換できない）
-                    const userMap = new Map(recipients.map(r => [r.line_user_id, r.display_name]))
-                    const pushBatches = chunk(lineUserIds, 10)
-
-                    for (const batch of pushBatches) {
-                        await Promise.all(batch.map(async (userId) => {
-                            try {
-                                await lineClient.pushMessage(
-                                    userId,
-                                    replaceNamePlaceholder(lineMessages, userMap.get(userId))
-                                )
-                                successCount++
-                            } catch (err) {
-                                console.error(`個別送信エラー (${userId}):`, err)
-                                recordError(err)
-                                failureCount++
-                            }
-                        }))
-                    }
-                } else {
-                    for (const batch of batches) {
-                        try {
-                            await lineClient.multicast(batch, lineMessages)
-                            successCount += batch.length
-                        } catch (err) {
-                            console.error('配信エラー:', err)
-                            recordError(err)
-                            failureCount += batch.length
-                        }
-                    }
-                }
+                // メッセージ送信（{name} 入りは1人ずつ名前を差し込み、それ以外は500人ずつまとめて送る）
+                const { successCount, failureCount, firstError } = await deliverToRecipients(lineClient, recipients, lineMessages)
 
                 // ステータス更新
                 await supabase
