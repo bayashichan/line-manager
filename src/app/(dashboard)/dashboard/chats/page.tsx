@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo, Suspense } from 'react'
+import { useState, useEffect, useRef, useMemo, Suspense, Fragment } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
@@ -16,6 +16,7 @@ import EmojiPicker from 'emoji-picker-react'
 import imageCompression from 'browser-image-compression'
 import { uploadToR2 as uploadFileToR2 } from '@/lib/storage/upload-client'
 import { formatJstDateTime, formatJstShort } from '@/lib/reminders/timing'
+import { formatChatDayLabel, formatChatTime, jstDayKey } from '@/lib/messaging/chat-date'
 import type { MessageContent, ScheduledChatMessage } from '@/types'
 
 // 型定義
@@ -627,12 +628,6 @@ function ChatsPage() {
         }
     }
 
-    // 日付フォーマット
-    const formatDate = (dateStr: string) => {
-        const d = new Date(dateStr)
-        return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
-    }
-
     return (
         // 高さ = 画面の高さ - (ヘッダー + mainの上下余白)。ページ自体がスクロールしないように収める
         <div className="flex h-[calc(100dvh-10rem)] lg:h-[calc(100dvh-8rem)] gap-4">
@@ -732,11 +727,21 @@ function ChatsPage() {
                             viewportClassName="overscroll-contain"
                         >
                             <div className="flex flex-col gap-4">
-                                {messages.map((msg) => {
+                                {messages.map((msg, index) => {
                                     const isAdmin = msg.sender === 'admin'
+                                    const sentAt = new Date(msg.created_at)
+                                    // 前のメッセージと日付（日本時間）が変わったところに日付の区切りを入れる
+                                    const isNewDay = index === 0 || jstDayKey(new Date(messages[index - 1].created_at)) !== jstDayKey(sentAt)
                                     return (
+                                        <Fragment key={msg.id}>
+                                        {isNewDay && (
+                                            <div className="flex justify-center">
+                                                <span className="px-3 py-0.5 rounded-full bg-slate-300/70 dark:bg-slate-700/70 text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                    {formatChatDayLabel(sentAt)}
+                                                </span>
+                                            </div>
+                                        )}
                                         <div
-                                            key={msg.id}
                                             className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}
                                         >
                                             {!isAdmin && (
@@ -769,12 +774,13 @@ function ChatsPage() {
                                                         </span>
                                                     )}
                                                 </div>
-                                                <span className="text-[10px] text-slate-400 mt-1 px-1">
+                                                <span className="text-[10px] text-slate-400 mt-1 px-1" title={formatJstDateTime(sentAt)}>
                                                     {isAdmin && msg.read_at && <span className="mr-2 text-blue-500">既読</span>}
-                                                    {formatDate(msg.created_at)}
+                                                    {formatChatTime(sentAt)}
                                                 </span>
                                             </div>
                                         </div>
+                                        </Fragment>
                                     )
                                 })}
 
