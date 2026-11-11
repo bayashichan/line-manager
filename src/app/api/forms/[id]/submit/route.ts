@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { LineClient } from '@/lib/line'
 import { DEFAULT_WAITLIST_MESSAGE } from '@/lib/forms/capacity'
+import { buildFormReplyMessages, formCourseName } from '@/lib/forms/reply'
 import { findLatestOwnResponse, verifyLineAccessToken } from '@/lib/forms/respondent'
 import {
     buildEditedMessage,
@@ -41,7 +42,7 @@ const FORM_FULL_ERROR = 'FORM_FULL'
  *       （申込状態・タグ・完了時の自動返信は最初の申込のまま）
  *  4. 回答を保存（残席設定がオンなら、DBのトリガーが定員から申込/キャンセル待ちを決める。
  *     締切設定で満席なら保存されず 409 を返す）。申込時点のLINE表示名も控える
- *  5. 完了時の自動返信をpush（テキスト/画像・複数通、{name}差し込み対応）し、送信結果を回答に記録
+ *  5. 完了時の自動返信をpush（テキスト/画像・複数通、{name}・{講座名}差し込み対応）し、送信結果を回答に記録
  *     キャンセル待ちならキャンセル待ち用の自動返信を送る
  *  6. 完了タグ（キャンセル待ちならキャンセル待ち用のタグ）を付与し、必要ならリッチメニューを再判定
  */
@@ -197,7 +198,7 @@ export async function POST(
         const completionContent: MessageContent[] = waitlisted
             ? [{ type: 'text', text: form.waitlist_message?.trim() || DEFAULT_WAITLIST_MESSAGE }]
             : (form.completion_message ?? [])
-        const messages = buildCompletionMessages(completionContent, name)
+        const messages = buildFormReplyMessages(completionContent, { name, courseName: formCourseName(form) })
         let replyResult: CompletionReplyResult
         if (messages.length === 0) {
             replyResult = { status: 'skipped', error: '自動返信メッセージが設定されていません' }
@@ -338,31 +339,4 @@ async function saveLineDisplayName(
     if (error) {
         console.error(`申込者のLINE表示名を記録できませんでした (responseId: ${responseId}):`, error)
     }
-}
-
-/**
- * 保存済みの完了メッセージ定義をLINEメッセージ配列に変換する。
- * テキストは {name} を差し込み、空要素は除外する。
- */
-function buildCompletionMessages(
-    content: MessageContent[],
-    name: string
-): object[] {
-    const messages: object[] = []
-    for (const block of content) {
-        if (block.type === 'text') {
-            const text = (block.text || '').replace(/{name}/g, name)
-            if (text.trim()) messages.push({ type: 'text', text })
-        } else if (block.type === 'image') {
-            const url = block.originalContentUrl || block.previewImageUrl
-            if (url) {
-                messages.push({
-                    type: 'image',
-                    originalContentUrl: url,
-                    previewImageUrl: block.previewImageUrl || url,
-                })
-            }
-        }
-    }
-    return messages
 }

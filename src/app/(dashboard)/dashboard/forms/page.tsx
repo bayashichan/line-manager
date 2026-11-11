@@ -7,6 +7,7 @@ import { cn, formatDateTime, getCookie } from '@/lib/utils'
 import type { Form, FormEntryStatus, FormField, FormFieldType, FormFullAction, FormResponse, Tag, MessageContent } from '@/types'
 import { uploadToR2 } from '@/lib/storage/upload-client'
 import { computeAvailability, DEFAULT_WAITLIST_MESSAGE, FEW_SEATS_THRESHOLD } from '@/lib/forms/capacity'
+import { COURSE_NAME_PLACEHOLDER, NAME_PLACEHOLDER } from '@/lib/forms/reply'
 import { fetchRespondentLineUsers, respondentLineName, type RespondentLineUser } from '@/lib/forms/respondent-line-user'
 import { CompletionReplyBadge, completionReplyDetail, completionReplyLabel } from '@/components/completion-reply-status'
 import {
@@ -586,7 +587,7 @@ export default function FormsPage() {
                         <div className="space-y-3">
                             <Label className="text-base">送信完了時の自動返信</Label>
                             <p className="text-xs text-slate-500">
-                                申込完了後にトーク画面へ自動送信されるメッセージです。テキストの <code className="font-mono">{'{name}'}</code> は友だちの名前に置き換わります。
+                                申込完了後にトーク画面へ自動送信されるメッセージです。テキストの <code className="font-mono">{NAME_PLACEHOLDER}</code> は友だちの名前、<code className="font-mono">{COURSE_NAME_PLACEHOLDER}</code> は見出し（空ならフォーム名）に置き換わります。
                             </p>
                             {fCompletion.map((block, index) => (
                                 <div key={index} className="p-3 sm:p-4 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-3">
@@ -610,12 +611,17 @@ export default function FormsPage() {
                                                 placeholder="例: {name}さん、お申し込みありがとうございます！担当者より追ってご連絡いたします。"
                                                 className="w-full h-28 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
                                             />
-                                            <button
-                                                onClick={() => updateCompletionBlock(index, { text: (block.text || '') + '{name}' })}
-                                                className="absolute bottom-2 right-2 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600"
-                                            >
-                                                {'{name}'} 挿入
-                                            </button>
+                                            <div className="absolute bottom-2 right-2 flex gap-1">
+                                                {[NAME_PLACEHOLDER, COURSE_NAME_PLACEHOLDER].map((token) => (
+                                                    <button
+                                                        key={token}
+                                                        onClick={() => updateCompletionBlock(index, { text: (block.text || '') + token })}
+                                                        className="text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600"
+                                                    >
+                                                        {token} 挿入
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
 
@@ -758,7 +764,7 @@ export default function FormsPage() {
                                             <div className="space-y-1.5">
                                                 <Label className="text-xs text-slate-500">キャンセル待ちの自動返信</Label>
                                                 <p className="text-xs text-slate-400">
-                                                    キャンセル待ちで受け付けた人には「送信完了時の自動返信」の代わりにこの文面を送ります。空欄なら入力欄の薄い文字の文面を送ります。
+                                                    キャンセル待ちで受け付けた人には「送信完了時の自動返信」の代わりにこの文面を送ります。空欄なら入力欄の薄い文字の文面を送ります。<code className="font-mono">{COURSE_NAME_PLACEHOLDER}</code> は見出し（空ならフォーム名）に置き換わるので、後から見返しても何の申込か分かります。
                                                 </p>
                                                 <div className="relative">
                                                     <textarea
@@ -767,12 +773,17 @@ export default function FormsPage() {
                                                         placeholder={DEFAULT_WAITLIST_MESSAGE}
                                                         className="w-full h-28 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
                                                     />
-                                                    <button
-                                                        onClick={() => setFWaitlistMessage(fWaitlistMessage + '{name}')}
-                                                        className="absolute bottom-2 right-2 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600"
-                                                    >
-                                                        {'{name}'} 挿入
-                                                    </button>
+                                                    <div className="absolute bottom-2 right-2 flex gap-1">
+                                                        {[NAME_PLACEHOLDER, COURSE_NAME_PLACEHOLDER].map((token) => (
+                                                            <button
+                                                                key={token}
+                                                                onClick={() => setFWaitlistMessage(fWaitlistMessage + token)}
+                                                                className="text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-2 py-1 rounded border border-slate-300 dark:border-slate-600"
+                                                            >
+                                                                {token} 挿入
+                                                            </button>
+                                                        ))}
+                                                    </div>
                                                 </div>
                                             </div>
                                             <div className="space-y-1.5">
